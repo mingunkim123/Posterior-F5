@@ -32,6 +32,7 @@ from f5_tts.infer.utils_infer import (
     target_rms,
 )
 from f5_tts.model.utils import list_str_to_idx, list_str_to_tensor
+from f5_tts.model.hybrid_reference_conditioner import HybridReferenceConditioner
 from f5_tts.posterior.io import load_posterior_manifest, load_topk_arrays
 from f5_tts.posterior.soft_embedding import expected_embedding_from_topk
 
@@ -91,7 +92,7 @@ parser.add_argument(
 parser.add_argument(
     "--ref_text_mode",
     type=str,
-    choices=["hard", "length_only", "soft_ctc"],
+    choices=["hard", "length_only", "soft_ctc", "hybrid"],
     help="Reference text conditioning mode, default hard.",
 )
 parser.add_argument(
@@ -251,7 +252,7 @@ if "voices" in config:
         if "infer/examples/" in voice_ref_audio:
             config["voices"][voice]["ref_audio"] = str(files("f5_tts").joinpath(f"{voice_ref_audio}"))
 
-if ref_text_mode not in {"hard", "length_only", "soft_ctc"}:
+if ref_text_mode not in {"hard", "length_only", "soft_ctc", "hybrid"}:
     raise ValueError(f"Unsupported ref_text_mode: {ref_text_mode}")
 
 posterior_entries = []
@@ -309,10 +310,11 @@ def _text_tensor_from_list(model_obj, text, device):
 
 
 def _soft_ctc_builder_for_entry(utterance):
-    if ref_text_mode != "soft_ctc" or utterance is None or utterance.frame_posteriors is None:
+    if ref_text_mode not in {"soft_ctc", "hybrid"} or utterance is None or utterance.frame_posteriors is None:
         return None
 
     base_dir = Path(posterior_file).expanduser().resolve().parent if posterior_file else None
+    hybrid_conditioner = HybridReferenceConditioner() if ref_text_mode == "hybrid" else None
 
     def _builder(model_obj, text, duration, ref_audio_len, ref_text, gen_text, device):
         del ref_text, gen_text
@@ -339,6 +341,8 @@ def _soft_ctc_builder_for_entry(utterance):
         hard_embed[:, :replace_len, :] = ref_soft[:, :replace_len, :].to(
             device=hard_embed.device, dtype=hard_embed.dtype
         )
+        if hybrid_conditioner is not None:
+            hard_embed = hybrid_conditioner(hard_embed, hard_embed, alpha=1.0)
         return hard_embed
 
     return _builder

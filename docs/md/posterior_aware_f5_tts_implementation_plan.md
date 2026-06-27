@@ -639,6 +639,8 @@ docs/md/experiment_protocol.md
 | Step 59 | `tests/test_hybrid_reference_conditioner.py` | gate alpha 1.0이면 soft text, 0.0이면 SSL branch와 같아지는지 테스트한다. | `pytest tests/test_hybrid_reference_conditioner.py` |
 | Step 60 | `src/f5_tts/infer/infer_cli.py` | `--ref_text_mode hybrid`를 추가하고 hybrid conditioner를 optional로 연결한다. | hard/soft/hybrid CLI dry run |
 
+Step 60의 현재 구현은 SSL feature extractor가 연결되기 전 단계의 안전한 skeleton이다. `hybrid` mode는 soft CTC posterior가 있을 때 `HybridReferenceConditioner`를 통과하지만, 실제 SSL branch 입력이 없으면 soft text condition을 그대로 유지하는 fallback으로 둔다. 실제 WavLM/SSL cache 연결은 Step 65 이후의 논문 실험 준비 단계에서 완성한다.
+
 ### 마무리 검증
 
 | Step | 파일 | 작업 | 확인 |

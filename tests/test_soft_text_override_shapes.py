@@ -51,6 +51,8 @@ def test_infer_cli_exposes_soft_ctc_builder_path():
     tree = ast.parse(source)
 
     assert '"soft_ctc"' in source
+    assert '"hybrid"' in source
+    assert "HybridReferenceConditioner" in source
     assert "expected_embedding_from_topk" in source
     assert "load_topk_arrays" in source
     assert "text_embed_override_builder=text_embed_override_builder_" in source
