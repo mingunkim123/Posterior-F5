@@ -38,7 +38,10 @@ def test_posterior_utterance_round_trip_with_nested_fields():
             num_frames=2,
             top_k=2,
             frame_rate=50.0,
+            sample_rate=16000,
             blank_id=0,
+            source="toy-ctc-model",
+            metadata={"frame_shift_ms": 20},
         ),
         token_map=PosteriorTokenMap(
             source="toy-ctc",
@@ -61,6 +64,9 @@ def test_posterior_utterance_round_trip_with_nested_fields():
     assert restored == utterance
     assert restored.nbest[1].text == "yellow world"
     assert restored.frame_posteriors.blank_id == 0
+    assert restored.frame_posteriors.sample_rate == 16000
+    assert restored.frame_posteriors.source == "toy-ctc-model"
+    assert restored.frame_posteriors.metadata["frame_shift_ms"] == 20
     assert restored.token_map.f5_vocab_offset == 1
 
 
@@ -83,4 +89,3 @@ def test_missing_required_fields_raise_key_error():
 
     with pytest.raises(KeyError):
         PosteriorUtterance.from_dict({"utterance_id": "utt-003"})
-

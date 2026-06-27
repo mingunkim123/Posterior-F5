@@ -59,7 +59,9 @@ class TopKPosterior:
     num_frames: int | None = None
     top_k: int | None = None
     frame_rate: float | None = None
+    sample_rate: int | None = None
     blank_id: int | None = None
+    source: str | None = None
     metadata: JsonDict = field(default_factory=dict)
 
     def to_dict(self) -> JsonDict:
@@ -72,7 +74,9 @@ class TopKPosterior:
             "num_frames": self.num_frames,
             "top_k": self.top_k,
             "frame_rate": self.frame_rate,
+            "sample_rate": self.sample_rate,
             "blank_id": self.blank_id,
+            "source": self.source,
             "metadata": self.metadata,
         }
 
@@ -90,7 +94,9 @@ class TopKPosterior:
             num_frames=data.get("num_frames"),
             top_k=data.get("top_k"),
             frame_rate=data.get("frame_rate"),
+            sample_rate=data.get("sample_rate"),
             blank_id=data.get("blank_id"),
+            source=data.get("source"),
             metadata=data.get("metadata", {}),
         )
 
