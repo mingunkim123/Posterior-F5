@@ -398,10 +398,14 @@ def infer_process(
     speed=speed,
     fix_duration=fix_duration,
     device=device,
+    expected_ref_text_len=None,
 ):
     # Split the input text into batches
     audio, sr = torchaudio.load(ref_audio)
-    max_chars = int(len(ref_text.encode("utf-8")) / (audio.shape[-1] / sr) * (22 - audio.shape[-1] / sr) * speed)
+    ref_text_len = expected_ref_text_len if expected_ref_text_len is not None and expected_ref_text_len > 0 else len(
+        ref_text.encode("utf-8")
+    )
+    max_chars = int(ref_text_len / (audio.shape[-1] / sr) * (22 - audio.shape[-1] / sr) * speed)
     gen_text_batches = chunk_text(gen_text, max_chars=max_chars)
     for i, gen_text_i in enumerate(gen_text_batches):
         print(f"gen_text {i}", gen_text_i)
@@ -430,6 +434,7 @@ def infer_process(
             speed=speed,
             fix_duration=fix_duration,
             device=device,
+            expected_ref_text_len=expected_ref_text_len,
         )
     )
 
@@ -455,6 +460,7 @@ def infer_batch_process(
     device=None,
     streaming=False,
     chunk_size=2048,
+    expected_ref_text_len=None,
 ):
     audio, sr = ref_audio
     if audio.shape[0] > 1:
@@ -488,7 +494,11 @@ def infer_batch_process(
             duration = int(fix_duration * target_sample_rate / hop_length)
         else:
             # Calculate duration
-            ref_text_len = len(ref_text.encode("utf-8"))
+            ref_text_len = (
+                expected_ref_text_len
+                if expected_ref_text_len is not None and expected_ref_text_len > 0
+                else len(ref_text.encode("utf-8"))
+            )
             gen_text_len = len(gen_text.encode("utf-8"))
             duration = ref_audio_len + int(ref_audio_len / ref_text_len * gen_text_len / local_speed)
 

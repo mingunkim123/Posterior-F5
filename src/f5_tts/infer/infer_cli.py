@@ -30,6 +30,7 @@ from f5_tts.infer.utils_infer import (
     sway_sampling_coef,
     target_rms,
 )
+from f5_tts.posterior.io import load_posterior_manifest
 
 
 parser = argparse.ArgumentParser(
@@ -83,6 +84,17 @@ parser.add_argument(
     "--ref_text",
     type=str,
     help="The transcript/subtitle for the reference audio",
+)
+parser.add_argument(
+    "--ref_text_mode",
+    type=str,
+    choices=["hard", "length_only"],
+    help="Reference text conditioning mode, default hard.",
+)
+parser.add_argument(
+    "--posterior_file",
+    type=str,
+    help="JSONL posterior manifest used by length_only mode.",
 )
 parser.add_argument(
     "-t",
@@ -196,6 +208,8 @@ ref_text = (
 )
 gen_text = args.gen_text or config.get("gen_text", "Here we generate something just for test.")
 gen_file = args.gen_file or config.get("gen_file", "")
+ref_text_mode = args.ref_text_mode or config.get("ref_text_mode", "hard")
+posterior_file = args.posterior_file or config.get("posterior_file", "")
 
 output_dir = args.output_dir or config.get("output_dir", "tests")
 output_file = args.output_file or config.get(
@@ -233,6 +247,50 @@ if "voices" in config:
         voice_ref_audio = config["voices"][voice]["ref_audio"]
         if "infer/examples/" in voice_ref_audio:
             config["voices"][voice]["ref_audio"] = str(files("f5_tts").joinpath(f"{voice_ref_audio}"))
+
+if ref_text_mode not in {"hard", "length_only"}:
+    raise ValueError(f"Unsupported ref_text_mode: {ref_text_mode}")
+
+posterior_entries = []
+if ref_text_mode != "hard":
+    if posterior_file:
+        posterior_entries = load_posterior_manifest(posterior_file)
+    else:
+        print("Warning: ref_text_mode is not hard, but no --posterior_file was provided. Falling back to hard length.")
+
+
+def _resolve_path_for_match(path):
+    try:
+        return str(Path(path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        return str(Path(path).expanduser())
+
+
+def _matches_ref_audio(utterance, ref_audio_path):
+    ref_audio_path = str(ref_audio_path)
+    ref_path = Path(ref_audio_path)
+    utterance_audio_path = str(utterance.audio_path)
+    utterance_path = Path(utterance_audio_path)
+
+    if utterance_audio_path == ref_audio_path:
+        return True
+    if _resolve_path_for_match(utterance_audio_path) == _resolve_path_for_match(ref_audio_path):
+        return True
+    if utterance_path.name and utterance_path.name == ref_path.name:
+        return True
+    return utterance.utterance_id in {ref_audio_path, ref_path.name, ref_path.stem}
+
+
+def _expected_ref_text_len_for_audio(ref_audio_path):
+    if ref_text_mode == "hard":
+        return None
+
+    for utterance in posterior_entries:
+        if _matches_ref_audio(utterance, ref_audio_path):
+            return utterance.expected_ref_len
+
+    print(f"Warning: No posterior entry found for {ref_audio_path}. Falling back to hard length.")
+    return None
 
 
 # ignore gen_text if gen_file provided
@@ -314,6 +372,7 @@ def main():
     for voice in voices:
         print("Voice:", voice)
         print("ref_audio ", voices[voice]["ref_audio"])
+        voices[voice]["expected_ref_text_len"] = _expected_ref_text_len_for_audio(voices[voice]["ref_audio"])
         voices[voice]["ref_audio"], voices[voice]["ref_text"] = preprocess_ref_audio_text(
             voices[voice]["ref_audio"], voices[voice]["ref_text"]
         )
@@ -338,6 +397,7 @@ def main():
         text = re.sub(reg2, "", text)
         ref_audio_ = voices[voice]["ref_audio"]
         ref_text_ = voices[voice]["ref_text"]
+        expected_ref_text_len_ = voices[voice].get("expected_ref_text_len")
         local_speed = voices[voice].get("speed", speed)
         gen_text_ = text.strip()
         print(f"Voice: {voice}")
@@ -356,6 +416,7 @@ def main():
             speed=local_speed,
             fix_duration=fix_duration,
             device=device,
+            expected_ref_text_len=expected_ref_text_len_,
         )
         generated_audio_segments.append(audio_segment)
 
