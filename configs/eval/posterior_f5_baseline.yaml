@@ -1,0 +1,21 @@
+name: posterior_f5_baseline
+manifest: manifests/dev_small.jsonl
+posterior_file: posterior_cache/dev_small.posterior.jsonl
+output_dir: eval_outputs/posterior_f5_baseline
+
+modes:
+  - hard
+  - length_only
+  - soft_ctc
+
+generation:
+  model: F5TTS_v1_Base
+  nfe_step: 16
+  cfg_strength: 2.0
+  sway_sampling_coef: -1.0
+  speed: 1.0
+
+metrics:
+  asr_eval_model: whisper
+  report_breakdown: true
+  report_rtf: true

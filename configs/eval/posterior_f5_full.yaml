@@ -1,0 +1,31 @@
+name: posterior_f5_full
+manifest: manifests/full_eval.jsonl
+posterior_file: posterior_cache/full_eval.posterior.jsonl
+output_dir: eval_outputs/posterior_f5_full
+
+subsets:
+  - clean
+  - noisy
+  - accented
+  - dysarthric
+
+modes:
+  - hard
+  - oracle
+  - length_only
+  - soft_ctc
+  - posterior_encoder
+
+generation:
+  model: F5TTS_v1_Base
+  nfe_step: 32
+  cfg_strength: 2.0
+  sway_sampling_coef: -1.0
+  speed: 1.0
+
+metrics:
+  asr_eval_model: separate_from_posterior_source
+  report_breakdown: true
+  report_speaker_similarity: true
+  report_utmos: true
+  bootstrap_samples: 10000

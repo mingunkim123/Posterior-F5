@@ -1,0 +1,26 @@
+defaults:
+  - F5TTS_v1_Base
+  - _self_
+
+posterior:
+  manifest: posterior_cache/dev.posterior.jsonl
+  mode: topk_ctc
+  top_k: 8
+  text_dim: ${model.arch.text_dim}
+  hidden_dim: 256
+  num_layers: 2
+  dropout: 0.0
+  f5_vocab_offset: 1
+  blank_id: null
+  filler_id: null
+
+distillation:
+  freeze_f5: true
+  loss: mse
+  learning_rate: 1.0e-4
+  batch_size: 16
+  num_workers: 4
+  max_steps: 10000
+  log_every: 50
+  save_every: 1000
+  output_dir: ckpts/posterior_f5_v1_base
