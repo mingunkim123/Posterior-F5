@@ -399,6 +399,7 @@ def infer_process(
     fix_duration=fix_duration,
     device=device,
     expected_ref_text_len=None,
+    text_embed_override_builder=None,
 ):
     # Split the input text into batches
     audio, sr = torchaudio.load(ref_audio)
@@ -435,6 +436,7 @@ def infer_process(
             fix_duration=fix_duration,
             device=device,
             expected_ref_text_len=expected_ref_text_len,
+            text_embed_override_builder=text_embed_override_builder,
         )
     )
 
@@ -461,6 +463,7 @@ def infer_batch_process(
     streaming=False,
     chunk_size=2048,
     expected_ref_text_len=None,
+    text_embed_override_builder=None,
 ):
     audio, sr = ref_audio
     if audio.shape[0] > 1:
@@ -502,6 +505,18 @@ def infer_batch_process(
             gen_text_len = len(gen_text.encode("utf-8"))
             duration = ref_audio_len + int(ref_audio_len / ref_text_len * gen_text_len / local_speed)
 
+        text_embed_override = None
+        if text_embed_override_builder is not None:
+            text_embed_override = text_embed_override_builder(
+                model_obj=model_obj,
+                text=final_text_list,
+                duration=duration,
+                ref_audio_len=ref_audio_len,
+                ref_text=ref_text,
+                gen_text=gen_text,
+                device=device,
+            )
+
         # inference
         with torch.inference_mode():
             generated, _ = model_obj.sample(
@@ -511,6 +526,7 @@ def infer_batch_process(
                 steps=nfe_step,
                 cfg_strength=cfg_strength,
                 sway_sampling_coef=sway_sampling_coef,
+                text_embed_override=text_embed_override,
             )
             del _
 

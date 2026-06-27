@@ -290,13 +290,19 @@ class DiT(nn.Module):
         drop_text: bool = False,
         cache: bool = True,
         audio_mask: bool["b n"] | None = None,
+        text_embed_override: torch.Tensor | None = None,
     ):
         if self.text_uncond is None or self.text_cond is None or not cache:
             if audio_mask is None:
                 seq_len = x.shape[1]
             else:
                 seq_len = audio_mask.sum(dim=1)  # per-sample valid speech length
-            text_embed = self.text_embed(text, seq_len=seq_len, drop_text=drop_text)
+            if text_embed_override is None:
+                text_embed = self.text_embed(text, seq_len=seq_len, drop_text=drop_text)
+            else:
+                text_embed = self.prepare_text_embed_override(
+                    text_embed_override, seq_len=seq_len, drop_text=drop_text, audio_mask=audio_mask
+                )
             if cache:
                 if drop_text:
                     self.text_uncond = text_embed
@@ -313,6 +319,34 @@ class DiT(nn.Module):
 
         return x
 
+    def prepare_text_embed_override(self, text_embed_override, seq_len, drop_text=False, audio_mask=None):
+        text_embed = text_embed_override.to(
+            device=self.input_embed.proj.weight.device, dtype=self.input_embed.proj.weight.dtype
+        )
+        if text_embed.ndim == 2:
+            text_embed = text_embed.unsqueeze(0)
+        if text_embed.ndim != 3:
+            raise ValueError("text_embed_override must have shape [batch, seq_len, text_dim] or [seq_len, text_dim]")
+
+        if torch.is_tensor(seq_len):
+            seq_len = seq_len.to(device=text_embed.device, dtype=torch.long)
+            max_seq_len = int(seq_len.max().item())
+        else:
+            max_seq_len = int(seq_len)
+
+        text_embed = text_embed[:, :max_seq_len, :]
+        if text_embed.shape[1] < max_seq_len:
+            text_embed = F.pad(text_embed, (0, 0, 0, max_seq_len - text_embed.shape[1]), value=0.0)
+
+        if audio_mask is not None:
+            valid_pos_mask = torch.arange(max_seq_len, device=text_embed.device).unsqueeze(0) < seq_len.unsqueeze(1)
+            text_embed = text_embed.masked_fill(~valid_pos_mask.unsqueeze(-1), 0.0)
+
+        if drop_text:
+            text_embed = torch.zeros_like(text_embed)
+
+        return text_embed
+
     def clear_cache(self):
         self.text_cond, self.text_uncond = None, None
 
@@ -327,6 +361,7 @@ class DiT(nn.Module):
         drop_text: bool = False,  # cfg for text
         cfg_infer: bool = False,  # cfg inference, pack cond & uncond forward
         cache: bool = False,
+        text_embed_override: torch.Tensor | None = None,
     ):
         batch, seq_len = x.shape[0], x.shape[1]
         if time.ndim == 0:
@@ -336,17 +371,38 @@ class DiT(nn.Module):
         t = self.time_embed(time)
         if cfg_infer:  # pack cond & uncond forward: b n d -> 2b n d
             x_cond = self.get_input_embed(
-                x, cond, text, drop_audio_cond=False, drop_text=False, cache=cache, audio_mask=mask
+                x,
+                cond,
+                text,
+                drop_audio_cond=False,
+                drop_text=False,
+                cache=cache,
+                audio_mask=mask,
+                text_embed_override=text_embed_override,
             )
             x_uncond = self.get_input_embed(
-                x, cond, text, drop_audio_cond=True, drop_text=True, cache=cache, audio_mask=mask
+                x,
+                cond,
+                text,
+                drop_audio_cond=True,
+                drop_text=True,
+                cache=cache,
+                audio_mask=mask,
+                text_embed_override=text_embed_override,
             )
             x = torch.cat((x_cond, x_uncond), dim=0)
             t = torch.cat((t, t), dim=0)
             mask = torch.cat((mask, mask), dim=0) if mask is not None else None
         else:
             x = self.get_input_embed(
-                x, cond, text, drop_audio_cond=drop_audio_cond, drop_text=drop_text, cache=cache, audio_mask=mask
+                x,
+                cond,
+                text,
+                drop_audio_cond=drop_audio_cond,
+                drop_text=drop_text,
+                cache=cache,
+                audio_mask=mask,
+                text_embed_override=text_embed_override,
             )
 
         rope = self.rotary_embed.forward_from_seq_len(seq_len)

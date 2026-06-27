@@ -99,6 +99,7 @@ class CFM(nn.Module):
         duplicate_test=False,
         t_inter=0.1,
         edit_mask=None,
+        text_embed_override=None,
     ):
         self.eval()
         # raw wave
@@ -174,6 +175,7 @@ class CFM(nn.Module):
                     drop_audio_cond=False,
                     drop_text=False,
                     cache=True,
+                    text_embed_override=text_embed_override,
                 )
                 return pred
 
@@ -186,6 +188,7 @@ class CFM(nn.Module):
                 mask=mask,
                 cfg_infer=True,
                 cache=True,
+                text_embed_override=text_embed_override,
             )
             pred, null_pred = torch.chunk(pred_cfg, 2, dim=0)
             return pred + (pred - null_pred) * cfg_strength

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import numpy as np
 import soundfile as sf
+import torch
 import tomli
 from cached_path import cached_path
 from hydra.utils import get_class
@@ -30,7 +31,9 @@ from f5_tts.infer.utils_infer import (
     sway_sampling_coef,
     target_rms,
 )
-from f5_tts.posterior.io import load_posterior_manifest
+from f5_tts.model.utils import list_str_to_idx, list_str_to_tensor
+from f5_tts.posterior.io import load_posterior_manifest, load_topk_arrays
+from f5_tts.posterior.soft_embedding import expected_embedding_from_topk
 
 
 parser = argparse.ArgumentParser(
@@ -88,7 +91,7 @@ parser.add_argument(
 parser.add_argument(
     "--ref_text_mode",
     type=str,
-    choices=["hard", "length_only"],
+    choices=["hard", "length_only", "soft_ctc"],
     help="Reference text conditioning mode, default hard.",
 )
 parser.add_argument(
@@ -248,7 +251,7 @@ if "voices" in config:
         if "infer/examples/" in voice_ref_audio:
             config["voices"][voice]["ref_audio"] = str(files("f5_tts").joinpath(f"{voice_ref_audio}"))
 
-if ref_text_mode not in {"hard", "length_only"}:
+if ref_text_mode not in {"hard", "length_only", "soft_ctc"}:
     raise ValueError(f"Unsupported ref_text_mode: {ref_text_mode}")
 
 posterior_entries = []
@@ -281,16 +284,64 @@ def _matches_ref_audio(utterance, ref_audio_path):
     return utterance.utterance_id in {ref_audio_path, ref_path.name, ref_path.stem}
 
 
-def _expected_ref_text_len_for_audio(ref_audio_path):
+def _posterior_entry_for_audio(ref_audio_path):
     if ref_text_mode == "hard":
         return None
 
     for utterance in posterior_entries:
         if _matches_ref_audio(utterance, ref_audio_path):
-            return utterance.expected_ref_len
+            return utterance
 
     print(f"Warning: No posterior entry found for {ref_audio_path}. Falling back to hard length.")
     return None
+
+
+def _expected_ref_text_len_for_entry(utterance):
+    if utterance is None:
+        return None
+    return utterance.expected_ref_len
+
+
+def _text_tensor_from_list(model_obj, text, device):
+    if model_obj.vocab_char_map is not None:
+        return list_str_to_idx(text, model_obj.vocab_char_map).to(device)
+    return list_str_to_tensor(text).to(device)
+
+
+def _soft_ctc_builder_for_entry(utterance):
+    if ref_text_mode != "soft_ctc" or utterance is None or utterance.frame_posteriors is None:
+        return None
+
+    base_dir = Path(posterior_file).expanduser().resolve().parent if posterior_file else None
+
+    def _builder(model_obj, text, duration, ref_audio_len, ref_text, gen_text, device):
+        del ref_text, gen_text
+        token_ids, probs = load_topk_arrays(utterance.frame_posteriors, base_dir=base_dir)
+        token_map = utterance.token_map
+        embedding_weight = model_obj.transformer.text_embed.text_embed.weight
+
+        ref_soft = expected_embedding_from_topk(
+            token_ids,
+            probs,
+            embedding_weight,
+            blank_id=utterance.frame_posteriors.blank_id
+            if utterance.frame_posteriors.blank_id is not None
+            else (token_map.blank_id if token_map else None),
+            filler_id=token_map.filler_id if token_map else None,
+            f5_vocab_offset=token_map.f5_vocab_offset if token_map else 1,
+        ).unsqueeze(0)
+
+        text_tensor = _text_tensor_from_list(model_obj, text, embedding_weight.device)
+        with torch.inference_mode():
+            hard_embed = model_obj.transformer.text_embed(text_tensor, seq_len=duration, drop_text=False)
+
+        replace_len = min(ref_audio_len, ref_soft.shape[1], hard_embed.shape[1])
+        hard_embed[:, :replace_len, :] = ref_soft[:, :replace_len, :].to(
+            device=hard_embed.device, dtype=hard_embed.dtype
+        )
+        return hard_embed
+
+    return _builder
 
 
 # ignore gen_text if gen_file provided
@@ -372,7 +423,9 @@ def main():
     for voice in voices:
         print("Voice:", voice)
         print("ref_audio ", voices[voice]["ref_audio"])
-        voices[voice]["expected_ref_text_len"] = _expected_ref_text_len_for_audio(voices[voice]["ref_audio"])
+        voices[voice]["posterior_entry"] = _posterior_entry_for_audio(voices[voice]["ref_audio"])
+        voices[voice]["expected_ref_text_len"] = _expected_ref_text_len_for_entry(voices[voice]["posterior_entry"])
+        voices[voice]["text_embed_override_builder"] = _soft_ctc_builder_for_entry(voices[voice]["posterior_entry"])
         voices[voice]["ref_audio"], voices[voice]["ref_text"] = preprocess_ref_audio_text(
             voices[voice]["ref_audio"], voices[voice]["ref_text"]
         )
@@ -398,6 +451,7 @@ def main():
         ref_audio_ = voices[voice]["ref_audio"]
         ref_text_ = voices[voice]["ref_text"]
         expected_ref_text_len_ = voices[voice].get("expected_ref_text_len")
+        text_embed_override_builder_ = voices[voice].get("text_embed_override_builder")
         local_speed = voices[voice].get("speed", speed)
         gen_text_ = text.strip()
         print(f"Voice: {voice}")
@@ -417,6 +471,7 @@ def main():
             fix_duration=fix_duration,
             device=device,
             expected_ref_text_len=expected_ref_text_len_,
+            text_embed_override_builder=text_embed_override_builder_,
         )
         generated_audio_segments.append(audio_segment)
 

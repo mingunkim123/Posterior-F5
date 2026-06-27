@@ -33,18 +33,20 @@ def test_infer_process_keeps_expected_ref_text_len_optional():
     tree = _module_tree("src/f5_tts/infer/utils_infer.py")
     function_def = _function_def(tree, "infer_process")
 
-    assert function_def.args.args[-1].arg == "expected_ref_text_len"
     assert isinstance(_arg_default(function_def, "expected_ref_text_len"), ast.Constant)
     assert _arg_default(function_def, "expected_ref_text_len").value is None
+    assert isinstance(_arg_default(function_def, "text_embed_override_builder"), ast.Constant)
+    assert _arg_default(function_def, "text_embed_override_builder").value is None
 
 
 def test_infer_batch_process_keeps_expected_ref_text_len_optional():
     tree = _module_tree("src/f5_tts/infer/utils_infer.py")
     function_def = _function_def(tree, "infer_batch_process")
 
-    assert function_def.args.args[-1].arg == "expected_ref_text_len"
     assert isinstance(_arg_default(function_def, "expected_ref_text_len"), ast.Constant)
     assert _arg_default(function_def, "expected_ref_text_len").value is None
+    assert isinstance(_arg_default(function_def, "text_embed_override_builder"), ast.Constant)
+    assert _arg_default(function_def, "text_embed_override_builder").value is None
 
 
 def test_infer_process_forwards_expected_ref_text_len_to_batch_process():
@@ -78,4 +80,3 @@ def test_infer_cli_exposes_length_only_without_changing_hard_default():
     assert infer_process_calls
     keywords = {keyword.arg for keyword in infer_process_calls[0].keywords}
     assert "expected_ref_text_len" in keywords
-
