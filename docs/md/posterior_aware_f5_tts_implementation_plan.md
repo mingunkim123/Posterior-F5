@@ -649,3 +649,100 @@ docs/md/experiment_protocol.md
 | Step 64 | 없음 | `git diff --stat`과 `git status`로 변경 범위를 확인한다. | commit 전 최종 확인 |
 
 이 순서를 따르면 한 번에 여러 곳을 동시에 건드리지 않아도 된다. 특히 `utils_infer.py`, `infer_cli.py`, `dit.py`, `cfm.py`처럼 핵심 경로 파일은 여러 step으로 나누어 바꾸는 것이 좋다. 이렇게 하면 어느 step에서 hard inference가 깨졌는지 바로 찾을 수 있다.
+
+## 13. 논문 실험 가능 상태까지의 후속 스텝
+
+Step 64까지는 연구 scaffold 완성에 가깝다. 논문 실험을 실제로 돌릴 수 있으려면 아래 조건이 추가로 충족되어야 한다.
+
+| 조건 | 의미 |
+| --- | --- |
+| dataset manifest가 고정됨 | 같은 split과 utterance id로 모든 mode를 반복 실행할 수 있어야 한다. |
+| posterior cache가 검증됨 | ASR 1-best, expected length, CTC top-k posterior, token map이 실제 wav에서 정상이어야 한다. |
+| generation runner가 있음 | `hard`, `length_only`, `soft_ctc`, `posterior_encoder`를 같은 manifest에서 자동 생성해야 한다. |
+| eval ASR runner가 있음 | generated wav를 별도 ASR로 transcribe해 prediction JSONL을 만들어야 한다. |
+| metric/statistics runner가 있음 | WER/CER/Sub/Del/Ins와 bootstrap 유의성 검정을 자동화해야 한다. |
+| posterior encoder 학습 loop가 완성됨 | skeleton이 아니라 checkpoint save/load, validation, overfit test가 있어야 한다. |
+| 결과표가 자동 생성됨 | 논문 table과 appendix table을 재현 가능하게 만들어야 한다. |
+
+아래 Step 65 이후는 이 조건들을 채우기 위한 실제 후속 계획이다. 가능하면 계속 한 step에 한 파일만 바꾼다.
+
+### 데이터 manifest와 smoke set
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 65 | `docs/md/paper_experiment_readiness.md` | 논문 실험을 시작할 수 있는 최소 조건과 full 조건을 명시한다. | 문서 직접 확인 |
+| Step 66 | `configs/eval/datasets_template.yaml` | clean/noisy/accented/dysarthric split 경로와 subset 이름의 표준 config를 만든다. | YAML load 확인 |
+| Step 67 | `src/f5_tts/eval/build_eval_manifest.py` | dataset별 원본 metadata를 posterior-F5 공통 JSONL manifest로 바꾸는 CLI skeleton을 만든다. | `--help` 확인 |
+| Step 68 | `tests/test_build_eval_manifest.py` | toy metadata에서 `utterance_id`, `ref_audio`, `ref_text`, `gen_text`, `text`, `subset`이 나오는지 테스트한다. | `pytest tests/test_build_eval_manifest.py` |
+| Step 69 | `docs/md/dataset_manifest_format.md` | 공통 manifest schema와 dataset별 필드 매핑 규칙을 문서화한다. | 문서 직접 확인 |
+| Step 70 | 없음 | 5개 utterance짜리 local smoke manifest를 생성한다. git에는 넣지 않는다. | `wc -l manifests/smoke.jsonl` |
+
+### posterior cache 실제 검증
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 71 | `src/f5_tts/scripts/inspect_posterior_cache.py` | posterior JSONL/NPZ의 shape, top-k 합, blank id, expected length를 검사하는 CLI를 만든다. | `--help` 확인 |
+| Step 72 | `tests/test_inspect_posterior_cache.py` | toy JSONL/NPZ에서 검사 결과가 정상인지 테스트한다. | `pytest tests/test_inspect_posterior_cache.py` |
+| Step 73 | `docs/md/posterior_cache_format.md` | 실제 smoke cache 생성 명령과 inspect 명령을 추가한다. | 문서 diff 확인 |
+| Step 74 | 없음 | smoke manifest 5개에 대해 `extract_asr_posterior.py --skip_whisper`를 실행한다. | `inspect_posterior_cache.py` 통과 |
+| Step 75 | 없음 | 실제 CTC model로 1개 wav top-k posterior를 추출한다. | NPZ shape와 entropy 확인 |
+| Step 76 | `src/f5_tts/posterior/token_projection.py` | ASR token id를 F5 vocab id로 매핑하거나 검증하는 helper를 만든다. | compile 확인 |
+| Step 77 | `tests/test_token_projection.py` | blank/filler/unknown/token offset 규칙을 toy vocab으로 테스트한다. | `pytest tests/test_token_projection.py` |
+
+### generation runner
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 78 | `src/f5_tts/eval/generate_posterior_f5.py` | manifest와 mode를 받아 generated wav와 generation metadata JSONL을 만드는 CLI skeleton을 만든다. | `--help` 확인 |
+| Step 79 | `src/f5_tts/eval/generate_posterior_f5.py` | `hard` mode generation을 API 또는 `infer_process()`로 연결한다. | smoke 1개 wav 생성 |
+| Step 80 | `src/f5_tts/eval/generate_posterior_f5.py` | `length_only` mode에서 posterior expected length를 연결한다. | hard/length wav 둘 다 생성 |
+| Step 81 | `src/f5_tts/eval/generate_posterior_f5.py` | `soft_ctc` mode에서 posterior file과 NPZ shard를 연결한다. | soft_ctc 1개 wav 생성 |
+| Step 82 | `tests/test_generate_posterior_f5_args.py` | mode, output path, manifest parsing을 lightweight test로 검증한다. | `pytest tests/test_generate_posterior_f5_args.py` |
+| Step 83 | `configs/eval/posterior_f5_baseline.yaml` | smoke run용 subset 크기, output path, mode list를 실제 runner 옵션에 맞춘다. | YAML load 확인 |
+| Step 84 | 없음 | smoke manifest에서 `hard`, `length_only`, `soft_ctc` wav를 각각 1개 이상 생성한다. | output wav 존재 확인 |
+
+### eval ASR와 metric runner
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 85 | `src/f5_tts/eval/transcribe_generated.py` | generated wav manifest를 별도 ASR로 transcribe해 prediction JSONL을 만드는 CLI를 만든다. | `--help` 확인 |
+| Step 86 | `tests/test_transcribe_generated_args.py` | generated manifest parsing과 prediction row schema를 테스트한다. | `pytest tests/test_transcribe_generated_args.py` |
+| Step 87 | `src/f5_tts/eval/eval_posterior_f5.py` | subset/mode별 aggregation과 per-utterance metrics JSONL 출력을 추가한다. | toy JSONL smoke |
+| Step 88 | `tests/test_eval_posterior_f5.py` | toy references/predictions에서 WER/CER 집계가 맞는지 테스트한다. | `pytest tests/test_eval_posterior_f5.py` |
+| Step 89 | `src/f5_tts/eval/bootstrap_significance.py` | paired bootstrap resampling으로 mode 간 WER/CER 차이 confidence interval을 계산한다. | `--help` 확인 |
+| Step 90 | `tests/test_bootstrap_significance.py` | 고정 seed toy data로 bootstrap 결과 shape와 부호를 테스트한다. | `pytest tests/test_bootstrap_significance.py` |
+| Step 91 | 없음 | smoke generated wav를 eval ASR로 transcribe하고 metric JSON을 만든다. | WER/CER JSON 생성 |
+
+### posterior encoder 학습 완성
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 92 | `src/f5_tts/model/posterior_dataset.py` | `oracle_text_tensor`, `seq_len`, `posterior_mask`를 batch에 포함하도록 확장한다. | dataset test 재실행 |
+| Step 93 | `src/f5_tts/train/train_posterior.py` | 실제 dataloader, optimizer, scheduler, checkpoint save/load loop를 추가한다. | `--dry_run` 확인 |
+| Step 94 | `tests/test_train_posterior_step.py` | tiny posterior encoder 1-step overfit loss가 감소하는지 테스트한다. | `pytest tests/test_train_posterior_step.py` |
+| Step 95 | `src/f5_tts/infer/infer_cli.py` | `--posterior_encoder_ckpt` 옵션과 `posterior_encoder` mode를 추가한다. | CLI help 확인 |
+| Step 96 | `src/f5_tts/model/posterior_encoder.py` | checkpoint load helper와 config serialization helper를 추가한다. | compile 확인 |
+| Step 97 | 없음 | 1개 batch overfit posterior encoder를 저장하고 `posterior_encoder` inference smoke를 실행한다. | wav 생성 확인 |
+
+### 결과표와 논문 재현성
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 98 | `src/f5_tts/eval/make_result_tables.py` | metric JSON들을 모아 paper table CSV/Markdown을 생성한다. | `--help` 확인 |
+| Step 99 | `tests/test_make_result_tables.py` | toy metrics에서 mode/subset table이 올바르게 나오는지 테스트한다. | `pytest tests/test_make_result_tables.py` |
+| Step 100 | `configs/eval/posterior_f5_full.yaml` | full run에 필요한 mode, subset, ASR source, eval ASR, bootstrap seed를 확정한다. | YAML load 확인 |
+| Step 101 | `docs/md/experiment_protocol.md` | smoke, dev, full run 명령을 실제 파일명 기준으로 갱신한다. | 문서 diff 확인 |
+| Step 102 | `docs/md/reproducibility_checklist.md` | commit hash, dataset version, ASR model, F5 checkpoint, seed, hardware 기록 양식을 만든다. | 문서 직접 확인 |
+| Step 103 | 없음 | dev subset에서 `hard`, `length_only`, `soft_ctc` 전체 sweep을 실행한다. | table 생성 확인 |
+| Step 104 | 없음 | full clean/noisy/accented/dysarthric run을 서버 GPU에서 실행한다. | output completeness check |
+| Step 105 | 없음 | bootstrap significance와 paper table을 생성한다. | CSV/Markdown table 확인 |
+
+### 논문 실험 가능 판정
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 106 | `docs/md/paper_experiment_readiness.md` | 실제 완료된 smoke/dev/full run 결과와 남은 gap을 기록한다. | 문서 diff 확인 |
+| Step 107 | 없음 | `git status`, `git log`, run output completeness를 확인한다. | dirty file 없음 |
+| Step 108 | 없음 | 논문 main table에 들어갈 최소 결과를 고정한다. | `results/tables/main_results.md` 존재 |
+
+Step 108까지 완료되면 “논문 실험을 돌릴 수 있는 상태”가 아니라, 최소한의 논문용 결과표를 실제로 생성한 상태가 된다. 이때부터는 모델 아이디어 개선보다는 ablation 추가, human evaluation, reviewer가 물을 비교군 보강으로 넘어간다.
