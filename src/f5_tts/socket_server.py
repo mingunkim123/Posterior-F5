@@ -8,6 +8,7 @@ import threading
 import traceback
 import wave
 from importlib.resources import files
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -23,10 +24,40 @@ from f5_tts.infer.utils_infer import (
     load_vocoder,
     preprocess_ref_audio_text,
 )
+from f5_tts.posterior.io import load_posterior_manifest
 
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _resolve_path_for_match(path):
+    try:
+        return str(Path(path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        return str(Path(path).expanduser())
+
+
+def _matches_ref_audio(utterance, ref_audio_path):
+    ref_audio_path = str(ref_audio_path)
+    ref_path = Path(ref_audio_path)
+    utterance_audio_path = str(utterance.audio_path)
+    utterance_path = Path(utterance_audio_path)
+
+    if utterance_audio_path == ref_audio_path:
+        return True
+    if _resolve_path_for_match(utterance_audio_path) == _resolve_path_for_match(ref_audio_path):
+        return True
+    if utterance_path.name and utterance_path.name == ref_path.name:
+        return True
+    return utterance.utterance_id in {ref_audio_path, ref_path.name, ref_path.stem}
+
+
+def _expected_ref_text_len_from_entries(posterior_entries, ref_audio):
+    for utterance in posterior_entries:
+        if _matches_ref_audio(utterance, ref_audio):
+            return utterance.expected_ref_len
+    return None
 
 
 class AudioFileWriterThread(threading.Thread):
@@ -70,7 +101,23 @@ class AudioFileWriterThread(threading.Thread):
 
 
 class TTSStreamingProcessor:
-    def __init__(self, model, ckpt_file, vocab_file, ref_audio, ref_text, device=None, dtype=torch.float32):
+    def __init__(
+        self,
+        model,
+        ckpt_file,
+        vocab_file,
+        ref_audio,
+        ref_text,
+        device=None,
+        dtype=torch.float32,
+        ref_text_mode="hard",
+        posterior_file=None,
+    ):
+        if ref_text_mode not in {"hard", "length_only"}:
+            raise ValueError(f"Unsupported ref_text_mode: {ref_text_mode}")
+
+        self.ref_text_mode = ref_text_mode
+        self.posterior_entries = load_posterior_manifest(posterior_file) if posterior_file and ref_text_mode != "hard" else []
         self.device = device or (
             "cuda"
             if torch.cuda.is_available()
@@ -110,11 +157,20 @@ class TTSStreamingProcessor:
         return load_vocoder(vocoder_name=self.mel_spec_type, is_local=False, local_path=None, device=self.device)
 
     def update_reference(self, ref_audio, ref_text):
+        self.expected_ref_text_len = (
+            _expected_ref_text_len_from_entries(self.posterior_entries, ref_audio)
+            if self.ref_text_mode == "length_only"
+            else None
+        )
         self.ref_audio, self.ref_text = preprocess_ref_audio_text(ref_audio, ref_text)
         self.audio, self.sr = torchaudio.load(self.ref_audio)
 
         ref_audio_duration = self.audio.shape[-1] / self.sr
-        ref_text_byte_len = len(self.ref_text.encode("utf-8"))
+        ref_text_byte_len = (
+            self.expected_ref_text_len
+            if self.expected_ref_text_len is not None and self.expected_ref_text_len > 0
+            else len(self.ref_text.encode("utf-8"))
+        )
         self.max_chars = int(ref_text_byte_len / (ref_audio_duration) * (25 - ref_audio_duration))
         self.few_chars = int(ref_text_byte_len / (ref_audio_duration) * (25 - ref_audio_duration) / 2)
         self.min_chars = int(ref_text_byte_len / (ref_audio_duration) * (25 - ref_audio_duration) / 4)
@@ -131,6 +187,7 @@ class TTSStreamingProcessor:
             progress=None,
             device=self.device,
             streaming=True,
+            expected_ref_text_len=self.expected_ref_text_len,
         ):
             pass
         logger.info("Warm-up completed.")
@@ -152,6 +209,7 @@ class TTSStreamingProcessor:
             device=self.device,
             streaming=True,
             chunk_size=2048,
+            expected_ref_text_len=self.expected_ref_text_len,
         )
 
         # Reset the file writer thread
@@ -246,6 +304,17 @@ if __name__ == "__main__":
 
     parser.add_argument("--device", default=None, help="Device to run the model on")
     parser.add_argument("--dtype", default=torch.float32, help="Data type to use for model inference")
+    parser.add_argument(
+        "--ref_text_mode",
+        default="hard",
+        choices=["hard", "length_only"],
+        help="Reference text mode. hard preserves the original F5-TTS behavior.",
+    )
+    parser.add_argument(
+        "--posterior_file",
+        default="",
+        help="JSONL posterior manifest used by length_only mode.",
+    )
 
     args = parser.parse_args()
 
@@ -259,6 +328,8 @@ if __name__ == "__main__":
             ref_text=args.ref_text,
             device=args.device,
             dtype=args.dtype,
+            ref_text_mode=args.ref_text_mode,
+            posterior_file=args.posterior_file,
         )
 
         # Start the server

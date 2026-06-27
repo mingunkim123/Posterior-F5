@@ -1,6 +1,7 @@
 import random
 import sys
 from importlib.resources import files
+from pathlib import Path
 
 import soundfile as sf
 import tqdm
@@ -18,6 +19,40 @@ from f5_tts.infer.utils_infer import (
     transcribe,
 )
 from f5_tts.model.utils import seed_everything
+from f5_tts.posterior.io import load_posterior_manifest
+
+
+def _resolve_path_for_match(path):
+    try:
+        return str(Path(path).expanduser().resolve())
+    except (OSError, RuntimeError):
+        return str(Path(path).expanduser())
+
+
+def _matches_ref_audio(utterance, ref_audio_path):
+    ref_audio_path = str(ref_audio_path)
+    ref_path = Path(ref_audio_path)
+    utterance_audio_path = str(utterance.audio_path)
+    utterance_path = Path(utterance_audio_path)
+
+    if utterance_audio_path == ref_audio_path:
+        return True
+    if _resolve_path_for_match(utterance_audio_path) == _resolve_path_for_match(ref_audio_path):
+        return True
+    if utterance_path.name and utterance_path.name == ref_path.name:
+        return True
+    return utterance.utterance_id in {ref_audio_path, ref_path.name, ref_path.stem}
+
+
+def _expected_ref_text_len_from_manifest(posterior_file, ref_audio):
+    if not posterior_file:
+        return None
+
+    for utterance in load_posterior_manifest(posterior_file):
+        if _matches_ref_audio(utterance, ref_audio):
+            return utterance.expected_ref_len
+
+    return None
 
 
 class F5TTS:
@@ -113,11 +148,20 @@ class F5TTS:
         file_wave=None,
         file_spec=None,
         seed=None,
+        ref_text_mode="hard",
+        posterior_file=None,
+        expected_ref_text_len=None,
     ):
+        if ref_text_mode not in {"hard", "length_only"}:
+            raise ValueError(f"Unsupported ref_text_mode: {ref_text_mode}")
+
         if seed is None:
             seed = random.randint(0, sys.maxsize)
         seed_everything(seed)
         self.seed = seed
+
+        if ref_text_mode == "length_only" and expected_ref_text_len is None:
+            expected_ref_text_len = _expected_ref_text_len_from_manifest(posterior_file, ref_file)
 
         ref_file, ref_text = preprocess_ref_audio_text(ref_file, ref_text, show_info=show_info)
 
@@ -138,6 +182,7 @@ class F5TTS:
             speed=speed,
             fix_duration=fix_duration,
             device=self.device,
+            expected_ref_text_len=expected_ref_text_len,
         )
 
         if file_wave is not None:
