@@ -524,3 +524,128 @@ docs/md/experiment_protocol.md
 | severe case | soft text only가 부족하면 hybrid가 가장 안정적이어야 함 |
 
 이 프로젝트의 핵심 기여는 "F5-TTS에 n-best를 넣었다"가 아니다. 기여는 reference transcript uncertainty가 F5의 text conditioning과 duration estimation을 어떻게 망가뜨리는지 분리하고, hard transcript와 transcript-free SSL 사이의 중간 설계 공간을 구현 및 검증하는 것이다.
+
+## 12. 한 번에 한 파일만 바꾸는 구현 스텝
+
+아래 순서는 실제 구현할 때 작은 commit 단위로 따라가기 위한 체크리스트다. 원칙은 단순하다.
+
+1. 한 step에서는 파일 하나만 새로 만들거나 수정한다.
+2. 같은 파일을 여러 번 수정해도 되지만, 각 수정은 별도 step으로 둔다.
+3. 가능한 한 각 step 뒤에 import test, unit test, smoke test 중 하나를 실행한다.
+4. hard F5 inference 기본 동작은 매 단계에서 깨지지 않아야 한다.
+
+### 준비
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 1 | 없음 | `git switch -c feature/posterior-aware-f5`로 작업 branch를 만든다. 이미 있으면 `git switch feature/posterior-aware-f5`만 한다. | `git status --short --branch` |
+| Step 2 | `.gitignore` | posterior cache, 실험 출력, checkpoint 출력 경로를 ignore한다. | `git diff -- .gitignore` |
+
+### posterior 기본 패키지
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 3 | `src/f5_tts/posterior/__init__.py` | 빈 posterior package를 만든다. 처음에는 import side effect가 없게 둔다. | `python -c "import f5_tts.posterior"` |
+| Step 4 | `src/f5_tts/posterior/schema.py` | `Hypothesis`, `TopKPosterior`, `PosteriorUtterance`, `PosteriorTokenMap` dataclass를 정의한다. | `python -m compileall src/f5_tts/posterior/schema.py` |
+| Step 5 | `tests/test_posterior_schema.py` | schema 생성, JSON 직렬화용 dict 변환, 필수 필드 검증 테스트를 추가한다. | `pytest tests/test_posterior_schema.py` |
+| Step 6 | `src/f5_tts/posterior/length.py` | n-best 기반 `expected_text_len()`과 CTC occupancy 기반 `expected_occupancy_len()`을 구현한다. | `python -m compileall src/f5_tts/posterior/length.py` |
+| Step 7 | `tests/test_posterior_length.py` | n-best 확률 정규화, 빈 후보, blank 제외 occupancy 계산 테스트를 추가한다. | `pytest tests/test_posterior_length.py` |
+| Step 8 | `src/f5_tts/posterior/normalize.py` | temperature scaling, top-k truncation, probability renormalization 함수를 구현한다. | `python -m compileall src/f5_tts/posterior/normalize.py` |
+| Step 9 | `tests/test_posterior_normalize.py` | top-k 후 합이 1이 되는지, temperature가 entropy를 바꾸는지 테스트한다. | `pytest tests/test_posterior_normalize.py` |
+| Step 10 | `src/f5_tts/posterior/io.py` | JSONL manifest와 `.npz` posterior shard를 읽는 최소 loader를 만든다. | `python -m compileall src/f5_tts/posterior/io.py` |
+| Step 11 | `tests/test_posterior_io.py` | 임시 JSONL/NPZ를 만들어 utterance id로 posterior를 찾는 테스트를 추가한다. | `pytest tests/test_posterior_io.py` |
+
+### length-only baseline
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 12 | `src/f5_tts/infer/utils_infer.py` | `infer_process()`에 optional `expected_ref_text_len=None` 인자를 추가한다. 기본값이면 기존 동작과 같게 둔다. | `python -m compileall src/f5_tts/infer/utils_infer.py` |
+| Step 13 | `src/f5_tts/infer/utils_infer.py` | `infer_process()`의 `max_chars` 계산에서 `expected_ref_text_len`이 있으면 `len(ref_text)` 대신 사용한다. | 기존 CLI help 실행 |
+| Step 14 | `src/f5_tts/infer/utils_infer.py` | `infer_batch_process()`에 optional `expected_ref_text_len=None` 인자를 추가한다. | `python -m compileall src/f5_tts/infer/utils_infer.py` |
+| Step 15 | `src/f5_tts/infer/utils_infer.py` | duration 계산에서 `expected_ref_text_len`이 있으면 `ref_text_len` 대신 사용한다. 0 이하 값은 fallback한다. | 짧은 inference smoke test |
+| Step 16 | `src/f5_tts/infer/infer_cli.py` | `--ref_text_mode hard|length_only`와 `--posterior_file` CLI 옵션을 추가한다. 아직 동작 연결은 하지 않는다. | `python src/f5_tts/infer/infer_cli.py --help` |
+| Step 17 | `src/f5_tts/infer/infer_cli.py` | `posterior_file`을 읽어서 현재 `ref_audio`의 `expected_ref_len`을 찾는 코드를 연결한다. | `python -m compileall src/f5_tts/infer/infer_cli.py` |
+| Step 18 | `src/f5_tts/infer/infer_cli.py` | `infer_process()` 호출에 `expected_ref_text_len`을 넘긴다. `hard` mode에서는 항상 `None`을 넘긴다. | hard mode smoke test |
+| Step 19 | `tests/test_hard_infer_compat.py` | `infer_process()`와 `infer_batch_process()`의 새 인자가 기본값에서 기존 호출을 깨지 않는지 테스트한다. | `pytest tests/test_hard_infer_compat.py` |
+
+### soft embedding 기반 MVP
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 20 | `src/f5_tts/posterior/soft_embedding.py` | posterior token id/prob에서 expected embedding을 만드는 순수 함수를 구현한다. | `python -m compileall src/f5_tts/posterior/soft_embedding.py` |
+| Step 21 | `tests/test_soft_text_embedding.py` | hard one-hot posterior가 기존 embedding lookup과 같은 결과를 내는지 테스트한다. | `pytest tests/test_soft_text_embedding.py` |
+| Step 22 | `src/f5_tts/model/backbones/dit.py` | `DiT.get_input_embed()`에 optional `text_embed_override=None` 인자를 추가한다. 기본값은 기존 경로다. | `python -m compileall src/f5_tts/model/backbones/dit.py` |
+| Step 23 | `src/f5_tts/model/backbones/dit.py` | override가 들어오면 `self.text_embed()` 대신 override를 쓰되, cache와 CFG uncond 경로는 기존처럼 유지한다. | hard inference smoke test |
+| Step 24 | `src/f5_tts/model/backbones/dit.py` | `DiT.forward()`에 `text_embed_override=None` 인자를 추가하고 `get_input_embed()`로 전달한다. | `python -m compileall src/f5_tts/model/backbones/dit.py` |
+| Step 25 | `src/f5_tts/model/cfm.py` | `CFM.sample()`에 optional `text_embed_override=None` 인자를 추가한다. | `python -m compileall src/f5_tts/model/cfm.py` |
+| Step 26 | `src/f5_tts/model/cfm.py` | `self.transformer(...)` 호출에 `text_embed_override`를 전달한다. 기본값이면 기존 결과가 같아야 한다. | hard inference smoke test |
+| Step 27 | `tests/test_soft_text_override_shapes.py` | 임의 tensor override가 DiT 입력 길이와 text_dim을 맞출 때 forward shape가 맞는지 테스트한다. | `pytest tests/test_soft_text_override_shapes.py` |
+| Step 28 | `src/f5_tts/infer/utils_infer.py` | `infer_batch_process()`에 optional `text_embed_override_builder=None` 인자를 추가한다. 아직 사용하지 않는다. | `python -m compileall src/f5_tts/infer/utils_infer.py` |
+| Step 29 | `src/f5_tts/infer/utils_infer.py` | `_infer_basic()` 안에서 builder가 있으면 gen_text별 soft text override를 만들고 `model_obj.sample()`에 넘긴다. | hard mode smoke test |
+| Step 30 | `src/f5_tts/infer/infer_cli.py` | `--ref_text_mode soft_ctc` 값을 허용한다. 아직 posterior builder 연결은 최소 stub로 둔다. | CLI help 확인 |
+| Step 31 | `src/f5_tts/infer/infer_cli.py` | `soft_ctc` mode에서 posterior loader와 soft embedding builder를 연결한다. | 작은 posterior fixture로 dry run |
+
+### ASR posterior 추출
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 32 | `src/f5_tts/scripts/extract_asr_posterior.py` | manifest를 읽고 output JSONL을 쓰는 CLI skeleton을 만든다. | `python src/f5_tts/scripts/extract_asr_posterior.py --help` |
+| Step 33 | `src/f5_tts/scripts/extract_asr_posterior.py` | 기존 Whisper transcription만 사용해 `one_best`와 dummy confidence를 저장하는 MVP를 구현한다. | 1개 wav로 JSONL 생성 |
+| Step 34 | `src/f5_tts/scripts/extract_asr_posterior.py` | CTC model을 선택적으로 로드해 top-k frame posterior를 `.npz`로 저장한다. | 짧은 wav 1개로 NPZ 생성 |
+| Step 35 | `src/f5_tts/posterior/schema.py` | CTC posterior 저장에 필요한 shard path, frame rate, top-k metadata 필드를 추가한다. | schema test 재실행 |
+| Step 36 | `tests/test_posterior_schema.py` | 새 CTC metadata 필드의 기본값과 dict 변환 테스트를 추가한다. | `pytest tests/test_posterior_schema.py` |
+| Step 37 | `docs/md/posterior_cache_format.md` | JSONL/NPZ cache format, token id offset, blank/filler 규칙을 문서화한다. | 문서 직접 확인 |
+
+### API와 socket 호환
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 38 | `src/f5_tts/api.py` | public API에 optional `ref_text_mode`, `posterior_file` 인자를 추가하되 기본값은 hard로 둔다. | `python -m compileall src/f5_tts/api.py` |
+| Step 39 | `src/f5_tts/api.py` | API 경로에서 length-only expected length를 `infer_process()`로 전달한다. | 기존 API 호출 smoke test |
+| Step 40 | `src/f5_tts/socket_server.py` | socket server 설정에 optional posterior mode 필드를 추가하되 기본값은 hard로 둔다. | `python -m compileall src/f5_tts/socket_server.py` |
+| Step 41 | `src/f5_tts/socket_server.py` | streaming inference에도 expected length를 넘길 수 있게 연결한다. | streaming hard mode smoke test |
+
+### learned posterior encoder
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 42 | `src/f5_tts/model/posterior_encoder.py` | top-k ids/probs/entropy를 받아 `[batch, seq_len, text_dim]`을 내는 작은 encoder class를 만든다. | `python -m compileall src/f5_tts/model/posterior_encoder.py` |
+| Step 43 | `tests/test_posterior_encoder_shapes.py` | posterior encoder 입력/출력 shape, padding mask 동작 테스트를 추가한다. | `pytest tests/test_posterior_encoder_shapes.py` |
+| Step 44 | `src/f5_tts/model/posterior_dataset.py` | oracle text, posterior cache, mel length를 함께 반환하는 dataset wrapper를 만든다. | `python -m compileall src/f5_tts/model/posterior_dataset.py` |
+| Step 45 | `tests/test_posterior_dataset.py` | 임시 cache fixture로 dataset item이 필요한 key를 반환하는지 테스트한다. | `pytest tests/test_posterior_dataset.py` |
+| Step 46 | `src/f5_tts/train/train_posterior.py` | F5 backbone freeze + posterior encoder distillation 학습 script skeleton을 만든다. | `python src/f5_tts/train/train_posterior.py --help` |
+| Step 47 | `src/f5_tts/configs/F5TTS_v1_Base_Posterior.yaml` | posterior encoder 학습용 config를 추가한다. | config load smoke test |
+| Step 48 | `src/f5_tts/train/train_posterior.py` | oracle `TextEmbedding` hidden state를 teacher로 뽑고 MSE distillation loss를 계산한다. | 1 batch overfit smoke test |
+
+### 평가
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 49 | `src/f5_tts/eval/error_breakdown.py` | WER/CER, Sub/Del/Ins 분해 helper를 구현한다. | `python -m compileall src/f5_tts/eval/error_breakdown.py` |
+| Step 50 | `tests/test_error_breakdown.py` | substitution, deletion, insertion toy example 테스트를 추가한다. | `pytest tests/test_error_breakdown.py` |
+| Step 51 | `src/f5_tts/eval/eval_posterior_f5.py` | manifest를 읽고 hard/length-only/soft-ctc mode별 생성과 평가를 수행하는 skeleton을 만든다. | `python src/f5_tts/eval/eval_posterior_f5.py --help` |
+| Step 52 | `configs/eval/posterior_f5_baseline.yaml` | clean/noisy small subset baseline eval config를 추가한다. | YAML load 확인 |
+| Step 53 | `configs/eval/posterior_f5_full.yaml` | accented/dysarthric/noisy full eval config template을 추가한다. | YAML load 확인 |
+| Step 54 | `docs/md/experiment_protocol.md` | dataset split, ASR 분리 평가, 통계 검정, 결과 table format을 문서화한다. | 문서 직접 확인 |
+
+### SSL hybrid 확장
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 55 | `src/f5_tts/posterior/gating.py` | entropy 기반 `alpha` gate 계산 함수를 만든다. | `python -m compileall src/f5_tts/posterior/gating.py` |
+| Step 56 | `tests/test_entropy_gate.py` | entropy가 낮으면 soft text weight가 커지고, 높으면 SSL weight가 커지는지 테스트한다. | `pytest tests/test_entropy_gate.py` |
+| Step 57 | `src/f5_tts/model/ssl_reference_encoder.py` | WavLM 등 SSL feature를 F5 text_dim으로 projection하는 module skeleton을 만든다. | `python -m compileall src/f5_tts/model/ssl_reference_encoder.py` |
+| Step 58 | `src/f5_tts/model/hybrid_reference_conditioner.py` | soft text condition과 SSL condition을 gate로 섞는 module을 만든다. | `python -m compileall src/f5_tts/model/hybrid_reference_conditioner.py` |
+| Step 59 | `tests/test_hybrid_reference_conditioner.py` | gate alpha 1.0이면 soft text, 0.0이면 SSL branch와 같아지는지 테스트한다. | `pytest tests/test_hybrid_reference_conditioner.py` |
+| Step 60 | `src/f5_tts/infer/infer_cli.py` | `--ref_text_mode hybrid`를 추가하고 hybrid conditioner를 optional로 연결한다. | hard/soft/hybrid CLI dry run |
+
+### 마무리 검증
+
+| Step | 파일 | 작업 | 확인 |
+| --- | --- | --- | --- |
+| Step 61 | `docs/md/posterior_aware_f5_tts_implementation_plan.md` | 구현하면서 바뀐 실제 파일명, CLI 옵션, 성공/실패한 실험을 반영해 계획서를 갱신한다. | 문서 diff 확인 |
+| Step 62 | 없음 | 전체 unit test를 실행한다. 파일 수정은 하지 않는다. | `pytest tests/test_posterior_* tests/test_soft_* tests/test_hard_infer_compat.py` |
+| Step 63 | 없음 | hard F5 baseline 1개, length-only 1개, soft-ctc 1개를 같은 prompt로 생성해 비교한다. | wav와 metric 출력 확인 |
+| Step 64 | 없음 | `git diff --stat`과 `git status`로 변경 범위를 확인한다. | commit 전 최종 확인 |
+
+이 순서를 따르면 한 번에 여러 곳을 동시에 건드리지 않아도 된다. 특히 `utils_infer.py`, `infer_cli.py`, `dit.py`, `cfm.py`처럼 핵심 경로 파일은 여러 step으로 나누어 바꾸는 것이 좋다. 이렇게 하면 어느 step에서 hard inference가 깨졌는지 바로 찾을 수 있다.
