@@ -31,10 +31,9 @@ from f5_tts.infer.utils_infer import (
     sway_sampling_coef,
     target_rms,
 )
-from f5_tts.model.utils import list_str_to_idx, list_str_to_tensor
+from f5_tts.model.utils import convert_char_to_pinyin, list_str_to_idx, list_str_to_tensor
 from f5_tts.model.hybrid_reference_conditioner import HybridReferenceConditioner
 from f5_tts.posterior.io import load_posterior_manifest, load_topk_arrays
-from f5_tts.posterior.soft_embedding import expected_embedding_from_topk
 
 
 parser = argparse.ArgumentParser(
@@ -332,6 +331,56 @@ def _project_asr_topk_to_f5_ids(token_ids, token_map, vocab_char_map):
     return [[_project_one(int(token_id)) for token_id in row] for row in token_ids]
 
 
+def _compressed_soft_ref_embed(token_ids, probs, embedding_weight, hard_ref_embed, *, blend=0.2):
+    """Compress frame-level CTC posterior to ref-token positions.
+
+    F5's text embedding positions are token positions padded to the mel length,
+    not mel-frame-aligned text positions. Replacing CTC frames directly would
+    overwrite the target text tokens, so this keeps the generated text path
+    intact and only nudges the reference-token region.
+    """
+
+    target_len = hard_ref_embed.shape[1]
+    if target_len <= 0:
+        return hard_ref_embed
+
+    num_frames = len(token_ids)
+    if num_frames == 0:
+        return hard_ref_embed
+
+    soft_rows = []
+    for index in range(target_len):
+        start = round(index * num_frames / target_len)
+        end = max(start + 1, round((index + 1) * num_frames / target_len))
+        mass_by_token = {}
+        for id_row, prob_row in zip(token_ids[start:end], probs[start:end]):
+            for token_id, prob in zip(id_row, prob_row):
+                token_id = int(token_id)
+                if token_id < 0:
+                    continue
+                mass_by_token[token_id] = mass_by_token.get(token_id, 0.0) + max(float(prob), 0.0)
+
+        total = sum(mass_by_token.values())
+        if total <= 1e-8:
+            soft_rows.append(hard_ref_embed[:, index, :])
+            continue
+
+        projected_ids = torch.tensor(
+            [token_id + 1 for token_id in mass_by_token],
+            device=embedding_weight.device,
+            dtype=torch.long,
+        )
+        weights = torch.tensor(
+            [prob / total for prob in mass_by_token.values()],
+            device=embedding_weight.device,
+            dtype=embedding_weight.dtype,
+        )
+        soft = (embedding_weight[projected_ids] * weights.unsqueeze(-1)).sum(dim=0, keepdim=True)
+        soft_rows.append(hard_ref_embed[:, index, :] * (1.0 - blend) + soft * blend)
+
+    return torch.stack(soft_rows, dim=1)
+
+
 def _soft_ctc_builder_for_entry(utterance):
     if ref_text_mode not in {"soft_ctc", "hybrid"} or utterance is None or utterance.frame_posteriors is None:
         return None
@@ -340,27 +389,27 @@ def _soft_ctc_builder_for_entry(utterance):
     hybrid_conditioner = HybridReferenceConditioner() if ref_text_mode == "hybrid" else None
 
     def _builder(model_obj, text, duration, ref_audio_len, ref_text, gen_text, device):
-        del ref_text, gen_text
+        del gen_text
         token_ids, probs = load_topk_arrays(utterance.frame_posteriors, base_dir=base_dir)
         token_map = utterance.token_map
         token_ids = _project_asr_topk_to_f5_ids(token_ids, token_map, model_obj.vocab_char_map)
         embedding_weight = model_obj.transformer.text_embed.text_embed.weight
-
-        ref_soft = expected_embedding_from_topk(
-            token_ids,
-            probs,
-            embedding_weight,
-            blank_id=-1,
-            filler_id=-1,
-            f5_vocab_offset=1,
-        ).unsqueeze(0)
 
         text_tensor = _text_tensor_from_list(model_obj, text, embedding_weight.device)
         with torch.inference_mode():
             hard_embed = model_obj.transformer.text_embed(text_tensor, seq_len=duration, drop_text=False)
         hard_embed = hard_embed.clone()
 
-        replace_len = min(ref_audio_len, ref_soft.shape[1], hard_embed.shape[1])
+        ref_token_text = convert_char_to_pinyin([ref_text])[0]
+        ref_token_len = min(len(ref_token_text), hard_embed.shape[1])
+        ref_soft = _compressed_soft_ref_embed(
+            token_ids,
+            probs,
+            embedding_weight,
+            hard_embed[:, :ref_token_len, :],
+        )
+
+        replace_len = min(ref_token_len, ref_soft.shape[1], hard_embed.shape[1])
         hard_embed[:, :replace_len, :] = ref_soft[:, :replace_len, :].to(
             device=hard_embed.device, dtype=hard_embed.dtype
         )
