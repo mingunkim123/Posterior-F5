@@ -67,6 +67,21 @@ fix_duration = None
 # -----------------------------------------
 
 
+def load_audio_waveform(audio_path):
+    """Load audio without requiring torchaudio's optional torchcodec backend."""
+
+    try:
+        import soundfile as sf
+
+        audio, sr = sf.read(audio_path, dtype="float32", always_2d=True)
+        return torch.from_numpy(audio.T), sr
+    except Exception:
+        return torchaudio.load(audio_path)
+
+
+# -----------------------------------------
+
+
 # chunk text into smaller pieces
 
 
@@ -402,7 +417,7 @@ def infer_process(
     text_embed_override_builder=None,
 ):
     # Split the input text into batches
-    audio, sr = torchaudio.load(ref_audio)
+    audio, sr = load_audio_waveform(ref_audio)
     ref_text_len = expected_ref_text_len if expected_ref_text_len is not None and expected_ref_text_len > 0 else len(
         ref_text.encode("utf-8")
     )

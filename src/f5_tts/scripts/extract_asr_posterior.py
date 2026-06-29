@@ -112,7 +112,14 @@ def extract_ctc_topk(audio_path: str, processor, model, device, *, top_k: int, s
     import torch
     import torchaudio
 
-    waveform, sample_rate = torchaudio.load(audio_path)
+    try:
+        import soundfile as sf
+
+        audio, sample_rate = sf.read(audio_path, dtype="float32", always_2d=True)
+        waveform = torch.from_numpy(audio.T)
+    except Exception:
+        waveform, sample_rate = torchaudio.load(audio_path)
+
     if waveform.shape[0] > 1:
         waveform = waveform.mean(dim=0, keepdim=True)
 

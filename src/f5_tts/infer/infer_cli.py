@@ -242,14 +242,14 @@ device = args.device or config.get("device", device)
 
 
 # patches for pip pkg user
-if "infer/examples/" in ref_audio:
+if "infer/examples/" in ref_audio and not Path(ref_audio).expanduser().exists():
     ref_audio = str(files("f5_tts").joinpath(f"{ref_audio}"))
-if "infer/examples/" in gen_file:
+if "infer/examples/" in gen_file and not Path(gen_file).expanduser().exists():
     gen_file = str(files("f5_tts").joinpath(f"{gen_file}"))
 if "voices" in config:
     for voice in config["voices"]:
         voice_ref_audio = config["voices"][voice]["ref_audio"]
-        if "infer/examples/" in voice_ref_audio:
+        if "infer/examples/" in voice_ref_audio and not Path(voice_ref_audio).expanduser().exists():
             config["voices"][voice]["ref_audio"] = str(files("f5_tts").joinpath(f"{voice_ref_audio}"))
 
 if ref_text_mode not in {"hard", "length_only", "soft_ctc", "hybrid"}:
@@ -336,6 +336,7 @@ def _soft_ctc_builder_for_entry(utterance):
         text_tensor = _text_tensor_from_list(model_obj, text, embedding_weight.device)
         with torch.inference_mode():
             hard_embed = model_obj.transformer.text_embed(text_tensor, seq_len=duration, drop_text=False)
+        hard_embed = hard_embed.clone()
 
         replace_len = min(ref_audio_len, ref_soft.shape[1], hard_embed.shape[1])
         hard_embed[:, :replace_len, :] = ref_soft[:, :replace_len, :].to(

@@ -9,6 +9,7 @@ results/
 posterior_cache/
 experiments/
 eval_outputs/
+tmp/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

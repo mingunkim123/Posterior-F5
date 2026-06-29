@@ -65,7 +65,15 @@ def resolve_shard_path(frame_posteriors: TopKPosterior, *, base_dir: str | Path 
     if shard_path.is_absolute() or base_dir is None:
         return shard_path
 
-    return Path(base_dir) / shard_path
+    resolved = Path(base_dir) / shard_path
+    if resolved.exists():
+        return resolved
+
+    nested = Path(base_dir) / "posterior_npz" / shard_path.name
+    if nested.exists():
+        return nested
+
+    return resolved
 
 
 def load_topk_arrays(
@@ -86,4 +94,3 @@ def load_topk_arrays(
         probs = data[frame_posteriors.probs_key].tolist()
 
     return token_ids, probs
-
