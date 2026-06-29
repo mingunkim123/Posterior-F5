@@ -309,6 +309,29 @@ def _text_tensor_from_list(model_obj, text, device):
     return list_str_to_tensor(text).to(device)
 
 
+def _project_asr_topk_to_f5_ids(token_ids, token_map, vocab_char_map):
+    if token_map is None or vocab_char_map is None:
+        return token_ids
+
+    source_tokens = token_map.tokens
+
+    def _project_one(token_id):
+        if token_id in {token_map.blank_id, token_map.filler_id}:
+            return -1
+        if token_id < 0 or token_id >= len(source_tokens):
+            return -1
+
+        token = source_tokens[token_id]
+        if token == "|":
+            token = " "
+        elif token.startswith("<") and token.endswith(">"):
+            return -1
+
+        return vocab_char_map.get(token, vocab_char_map.get(token.lower(), 0))
+
+    return [[_project_one(int(token_id)) for token_id in row] for row in token_ids]
+
+
 def _soft_ctc_builder_for_entry(utterance):
     if ref_text_mode not in {"soft_ctc", "hybrid"} or utterance is None or utterance.frame_posteriors is None:
         return None
@@ -320,17 +343,16 @@ def _soft_ctc_builder_for_entry(utterance):
         del ref_text, gen_text
         token_ids, probs = load_topk_arrays(utterance.frame_posteriors, base_dir=base_dir)
         token_map = utterance.token_map
+        token_ids = _project_asr_topk_to_f5_ids(token_ids, token_map, model_obj.vocab_char_map)
         embedding_weight = model_obj.transformer.text_embed.text_embed.weight
 
         ref_soft = expected_embedding_from_topk(
             token_ids,
             probs,
             embedding_weight,
-            blank_id=utterance.frame_posteriors.blank_id
-            if utterance.frame_posteriors.blank_id is not None
-            else (token_map.blank_id if token_map else None),
-            filler_id=token_map.filler_id if token_map else None,
-            f5_vocab_offset=token_map.f5_vocab_offset if token_map else 1,
+            blank_id=-1,
+            filler_id=-1,
+            f5_vocab_offset=1,
         ).unsqueeze(0)
 
         text_tensor = _text_tensor_from_list(model_obj, text, embedding_weight.device)
