@@ -1,0 +1,15 @@
+{
+  "wer_substitutions": 1,
+  "wer_deletions": 0,
+  "wer_insertions": 0,
+  "wer_reference_length": 2,
+  "cer_substitutions": 0,
+  "cer_deletions": 1,
+  "cer_insertions": 0,
+  "cer_reference_length": 11,
+  "num_utterances": 1,
+  "wer": 0.5,
+  "cer": 0.09090909090909091,
+  "mode": "hard",
+  "posterior_file": ""
+}
