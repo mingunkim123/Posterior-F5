@@ -415,6 +415,7 @@ def infer_process(
     device=device,
     expected_ref_text_len=None,
     text_embed_override_builder=None,
+    seed=None,
 ):
     # Split the input text into batches
     audio, sr = load_audio_waveform(ref_audio)
@@ -452,6 +453,7 @@ def infer_process(
             device=device,
             expected_ref_text_len=expected_ref_text_len,
             text_embed_override_builder=text_embed_override_builder,
+            seed=seed,
         )
     )
 
@@ -479,6 +481,7 @@ def infer_batch_process(
     chunk_size=2048,
     expected_ref_text_len=None,
     text_embed_override_builder=None,
+    seed=None,
 ):
     audio, sr = ref_audio
     if audio.shape[0] > 1:
@@ -542,6 +545,7 @@ def infer_batch_process(
                 cfg_strength=cfg_strength,
                 sway_sampling_coef=sway_sampling_coef,
                 text_embed_override=text_embed_override,
+                seed=seed,
             )
             del _
 

@@ -189,6 +189,11 @@ parser.add_argument(
     type=str,
     help="Specify the device to run on",
 )
+parser.add_argument(
+    "--seed",
+    type=int,
+    help="Optional random seed for deterministic sampling.",
+)
 args = parser.parse_args()
 
 
@@ -238,6 +243,7 @@ sway_sampling_coef = args.sway_sampling_coef or config.get("sway_sampling_coef",
 speed = args.speed or config.get("speed", speed)
 fix_duration = args.fix_duration or config.get("fix_duration", fix_duration)
 device = args.device or config.get("device", device)
+seed = args.seed if args.seed is not None else config.get("seed", None)
 
 
 # patches for pip pkg user
@@ -548,6 +554,7 @@ def main():
             device=device,
             expected_ref_text_len=expected_ref_text_len_,
             text_embed_override_builder=text_embed_override_builder_,
+            seed=seed,
         )
         generated_audio_segments.append(audio_segment)
 
