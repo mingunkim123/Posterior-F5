@@ -31,3 +31,16 @@ def test_shape_mismatch_raises_error():
 
     with pytest.raises(ValueError):
         conditioner(torch.ones(1, 2, 3), torch.ones(1, 3, 3), alpha=0.5)
+
+
+def test_entropy_gate_moves_high_entropy_toward_ssl():
+    conditioner = HybridReferenceConditioner(entropy_threshold=1.0)
+    soft_text = torch.ones(1, 2, 3)
+    ssl = torch.zeros(1, 2, 3)
+
+    low_entropy = conditioner(soft_text, ssl, entropy=torch.full((1, 2), 0.1))
+    high_entropy = conditioner(soft_text, ssl, entropy=torch.full((1, 2), 3.0))
+
+    assert low_entropy.mean() > high_entropy.mean()
+    assert low_entropy.mean() > 0.5
+    assert high_entropy.mean() < 0.5

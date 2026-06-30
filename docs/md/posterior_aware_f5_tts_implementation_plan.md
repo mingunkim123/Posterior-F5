@@ -899,6 +899,15 @@ Stage 1까지 끝나면 `posterior_encoder`나 `hybrid`가 없어도 최소 논�
 | Step 111 | `tests/test_hybrid_reference_conditioner.py` | entropy/blank gate가 low entropy에서는 soft text, high entropy에서는 SSL branch로 기울어지는지 end-to-end에 가깝게 테스트한다. | `pytest tests/test_hybrid_reference_conditioner.py` |
 | Step 112 | 없음 | severe/noisy subset에서 `soft_ctc` vs real `hybrid`를 비교한다. | subset table 확인 |
 
+진행 기록:
+
+- Step 107: `src/f5_tts/scripts/extract_ssl_reference.py`를 추가했다. 실제 Hugging Face SSL encoder extraction과 lightweight `--synthetic_dim` cache 생성을 지원한다.
+- Step 108: `tests/test_ssl_reference_cache.py`를 추가해 synthetic SSL cache 생성, shard load, target length projection을 검증했다.
+- Step 109: `ssl_reference_encoder.py`에 SSL cache JSONL index/load와 cached condition projection helper를 추가했다.
+- Step 110: `infer_cli.py`의 `hybrid` mode가 `--ssl_cache`를 읽고 soft text condition과 SSL condition을 entropy gate로 mix하도록 연결했다.
+- Step 111: high entropy에서 SSL branch로 기울어지는 conditioner test를 추가했다.
+- Step 112: severe/noisy subset 실제 비교는 full dataset과 real SSL cache가 필요하므로 실행하지 않았다.
+
 ### H. 최종 재현성과 논문 산출물
 
 | Step | 파일 | 작업 | 확인 |

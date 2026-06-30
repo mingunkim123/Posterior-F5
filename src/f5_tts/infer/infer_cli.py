@@ -34,6 +34,7 @@ from f5_tts.infer.utils_infer import (
 from f5_tts.model.utils import convert_char_to_pinyin, list_str_to_idx, list_str_to_tensor
 from f5_tts.model.hybrid_reference_conditioner import HybridReferenceConditioner
 from f5_tts.model.posterior_encoder import load_posterior_encoder_checkpoint
+from f5_tts.model.ssl_reference_encoder import cached_ssl_condition, index_ssl_cache
 from f5_tts.posterior.io import load_posterior_manifest, load_topk_arrays
 from f5_tts.posterior.soft_embedding import expected_embedding_from_topk
 
@@ -105,6 +106,11 @@ parser.add_argument(
     "--posterior_encoder_ckpt",
     type=str,
     help="Posterior encoder checkpoint for posterior_encoder mode.",
+)
+parser.add_argument(
+    "--ssl_cache",
+    type=str,
+    help="JSONL SSL feature cache for hybrid mode.",
 )
 parser.add_argument(
     "-t",
@@ -226,6 +232,7 @@ gen_file = args.gen_file or config.get("gen_file", "")
 ref_text_mode = args.ref_text_mode or config.get("ref_text_mode", "hard")
 posterior_file = args.posterior_file or config.get("posterior_file", "")
 posterior_encoder_ckpt = args.posterior_encoder_ckpt or config.get("posterior_encoder_ckpt", "")
+ssl_cache = args.ssl_cache or config.get("ssl_cache", "")
 
 output_dir = args.output_dir or config.get("output_dir", "tests")
 output_file = args.output_file or config.get(
@@ -275,6 +282,8 @@ if ref_text_mode != "hard":
     else:
         print("Warning: ref_text_mode is not hard, but no --posterior_file was provided. Falling back to hard length.")
 
+ssl_entries = index_ssl_cache(ssl_cache) if ssl_cache else {}
+
 
 def _resolve_path_for_match(path):
     try:
@@ -307,6 +316,21 @@ def _posterior_entry_for_audio(ref_audio_path):
             return utterance
 
     print(f"Warning: No posterior entry found for {ref_audio_path}. Falling back to hard length.")
+    return None
+
+
+def _ssl_entry_for_audio(ref_audio_path, posterior_entry=None):
+    if not ssl_entries:
+        return None
+    if posterior_entry is not None and posterior_entry.utterance_id in ssl_entries:
+        return ssl_entries[posterior_entry.utterance_id]
+    ref_path = Path(str(ref_audio_path))
+    for entry in ssl_entries.values():
+        audio_path = str(entry.get("audio_path") or "")
+        if audio_path == str(ref_audio_path):
+            return entry
+        if Path(audio_path).name == ref_path.name or Path(audio_path).stem == ref_path.stem:
+            return entry
     return None
 
 
@@ -390,7 +414,7 @@ def _compressed_soft_ref_embed(token_ids, probs, embedding_weight, hard_ref_embe
     return torch.stack(soft_rows, dim=1)
 
 
-def _soft_ctc_builder_for_entry(utterance):
+def _soft_ctc_builder_for_entry(utterance, ssl_entry=None):
     if ref_text_mode not in {"soft_ctc", "hybrid"} or utterance is None or utterance.frame_posteriors is None:
         return None
 
@@ -423,7 +447,25 @@ def _soft_ctc_builder_for_entry(utterance):
             device=hard_embed.device, dtype=hard_embed.dtype
         )
         if hybrid_conditioner is not None:
-            hard_embed = hybrid_conditioner(hard_embed, hard_embed, alpha=1.0)
+            if ssl_entry is None:
+                hard_embed = hybrid_conditioner(hard_embed, hard_embed, alpha=1.0)
+            else:
+                ssl_condition = cached_ssl_condition(
+                    ssl_entry,
+                    text_dim=hard_embed.shape[-1],
+                    target_len=hard_embed.shape[1],
+                    base_dir=Path(ssl_cache).expanduser().resolve().parent if ssl_cache else None,
+                    device=hard_embed.device,
+                ).to(dtype=hard_embed.dtype)
+                entropy = None
+                if utterance.mean_entropy is not None:
+                    entropy = torch.full(
+                        (hard_embed.shape[0], hard_embed.shape[1]),
+                        float(utterance.mean_entropy),
+                        device=hard_embed.device,
+                        dtype=hard_embed.dtype,
+                    )
+                hard_embed = hybrid_conditioner(hard_embed, ssl_condition, entropy=entropy)
         return hard_embed
 
     return _builder
@@ -477,10 +519,10 @@ def _posterior_encoder_builder_for_entry(utterance):
     return _builder
 
 
-def _text_embed_override_builder_for_entry(utterance):
+def _text_embed_override_builder_for_entry(utterance, ssl_entry=None):
     if ref_text_mode == "posterior_encoder":
         return _posterior_encoder_builder_for_entry(utterance)
-    return _soft_ctc_builder_for_entry(utterance)
+    return _soft_ctc_builder_for_entry(utterance, ssl_entry=ssl_entry)
 
 
 # ignore gen_text if gen_file provided
@@ -563,8 +605,11 @@ def main():
         print("Voice:", voice)
         print("ref_audio ", voices[voice]["ref_audio"])
         voices[voice]["posterior_entry"] = _posterior_entry_for_audio(voices[voice]["ref_audio"])
+        voices[voice]["ssl_entry"] = _ssl_entry_for_audio(voices[voice]["ref_audio"], voices[voice]["posterior_entry"])
         voices[voice]["expected_ref_text_len"] = _expected_ref_text_len_for_entry(voices[voice]["posterior_entry"])
-        voices[voice]["text_embed_override_builder"] = _text_embed_override_builder_for_entry(voices[voice]["posterior_entry"])
+        voices[voice]["text_embed_override_builder"] = _text_embed_override_builder_for_entry(
+            voices[voice]["posterior_entry"], voices[voice]["ssl_entry"]
+        )
         voices[voice]["ref_audio"], voices[voice]["ref_text"] = preprocess_ref_audio_text(
             voices[voice]["ref_audio"], voices[voice]["ref_text"]
         )

@@ -264,6 +264,58 @@ def test_run_scaffold_can_plan_posterior_encoder_command(tmp_path):
     assert "--posterior_encoder_ckpt" in command_row["command"]
 
 
+def test_run_scaffold_can_plan_hybrid_ssl_cache_command(tmp_path):
+    ref_audio = tmp_path / "ref.wav"
+    ref_audio.write_bytes(b"not-used-in-dry-run")
+    manifest = tmp_path / "manifest.jsonl"
+    ssl_cache = tmp_path / "ssl.jsonl"
+    ssl_cache.write_text('{"utterance_id":"utt-001","audio_path":"ref.wav","feature_path":"utt-001.npz"}\n')
+    manifest.write_text(
+        json.dumps(
+            {
+                "utterance_id": "utt-001",
+                "ref_audio": str(ref_audio),
+                "ref_text": "Reference transcript.",
+                "gen_text": "Target text.",
+                "text": "Target text.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--run_id",
+            "run_hybrid_plan",
+            "--artifact_root",
+            str(tmp_path / "runs"),
+            "--manifest",
+            str(manifest),
+            "--mode",
+            "hybrid",
+            "--ssl_cache",
+            str(ssl_cache),
+            "--run_posterior_extraction",
+            "--skip_whisper",
+            "--run_inference",
+            "--inference_dry_run",
+        ],
+        cwd=Path.cwd(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    run_root = Path(result.stdout.strip())
+    command_row = json.loads((run_root / "generated" / "hybrid" / "commands.jsonl").read_text(encoding="utf-8"))
+
+    assert "hybrid" in command_row["command"]
+    assert "--ssl_cache" in command_row["command"]
+
+
 def test_run_scaffold_can_plan_prediction_jsonl(tmp_path):
     ref_audio = tmp_path / "ref.wav"
     ref_audio.write_bytes(b"not-used-in-dry-run")
@@ -514,6 +566,7 @@ Path(args.output_dir, args.output_file).write_bytes(b"tiny")
         infer_device=None,
         vocab_file="",
         posterior_encoder_ckpt="",
+        ssl_cache="",
         min_wav_bytes=44,
         eval_asr="openai/whisper-large-v3-turbo",
         run_prediction=False,
