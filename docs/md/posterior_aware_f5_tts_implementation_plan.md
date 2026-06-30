@@ -811,6 +811,15 @@ Step 64까지는 모델 아이디어를 검증할 수 있는 연구 scaffold가 
 | Step 84 | `platform/workers/run_posterior_f5_pipeline.py` | non-dry-run에서 wav 누락, 0 byte, 너무 짧은 생성물을 stage failure로 처리한다. | 실패 fixture 테스트 |
 | Step 85 | `tests/test_mlops_run_scaffold.py` | missing/empty wav completeness check를 lightweight test로 고정한다. | `pytest tests/test_mlops_run_scaffold.py` |
 
+진행 기록:
+
+- Step 80: `run_posterior_f5_pipeline.py`에 `--config` YAML 입력을 추가해 `configs/eval/*.yaml` 계약을 직접 실행할 수 있게 했다.
+- Step 81: mode별 `generated/<mode>/commands.jsonl`에 seed, checkpoint, started/finished time, elapsed time, exit code, output size/hash를 기록하도록 확장했다.
+- Step 82: `tests/test_mlops_run_scaffold.py`에 config run contract와 generation metadata 테스트를 추가했다.
+- Step 83: GPU real wav 생성은 환경 의존 작업이라 아직 실행하지 않았다. C 섹션에서는 runner가 real-run metadata와 completeness check를 지원하도록 준비했다.
+- Step 84: non-dry-run에서 wav 누락 또는 `--min_wav_bytes` 미만 출력이면 inference stage를 실패로 처리한다.
+- Step 85: tiny wav fake inference fixture로 completeness failure를 테스트했다.
+
 ### D. 평가와 논문 metric 완성
 
 | Step | 파일 | 작업 | 확인 |

@@ -1,10 +1,19 @@
 import json
+import importlib.util
+from types import SimpleNamespace
 import subprocess
 import sys
 from pathlib import Path
 
 
 SCRIPT = Path("platform/workers/run_posterior_f5_pipeline.py")
+
+
+def _load_worker_module():
+    spec = importlib.util.spec_from_file_location("run_posterior_f5_pipeline", SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_run_scaffold_creates_artifact_contract(tmp_path):
@@ -322,3 +331,164 @@ def test_run_scaffold_can_compute_metrics_summary(tmp_path):
     assert oracle_metrics["mode"] == "oracle"
     assert len(summary["modes"]) == 4
     assert "mode,num_utterances,wer,cer" in summary_csv
+
+
+def test_run_scaffold_can_apply_yaml_config(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "utterance_id": "utt-001",
+                "ref_audio": "src/f5_tts/infer/examples/basic/basic_ref_en.wav",
+                "ref_text": "Reference transcript.",
+                "gen_text": "Target text.",
+                "text": "Target text.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"""
+name: config_test
+manifest: "{manifest}"
+artifact_root: "{tmp_path / 'runs'}"
+modes:
+  - hard
+generation:
+  model: F5TTS_v1_Base
+  checkpoint_id: f5tts_v1_base_hf
+  checkpoint: hf://example/checkpoint.safetensors
+  checkpoint_hash: hf:example
+  vocoder: vocos
+  seed: 77
+  run_inference: true
+  inference_dry_run: true
+metrics:
+  run_prediction: true
+  prediction_dry_run: true
+  run_metrics: true
+""",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--config",
+            str(config),
+            "--run_id",
+            "run_from_config",
+            "--fail_if_exists",
+        ],
+        cwd=Path.cwd(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    run_root = Path(result.stdout.strip())
+    payload = json.loads((run_root / "run.json").read_text(encoding="utf-8"))
+    command_row = json.loads((run_root / "generated" / "hard" / "commands.jsonl").read_text(encoding="utf-8"))
+
+    assert payload["experiment"] == "config_test"
+    assert payload["modes"] == ["hard"]
+    assert payload["generation"]["seed"] == 77
+    assert command_row["status"] == "planned"
+    assert command_row["checkpoint_id"] == "f5tts_v1_base_hf"
+
+
+def test_run_scaffold_records_generation_metadata_and_rejects_tiny_wavs(tmp_path):
+    module = _load_worker_module()
+    repo_root = tmp_path / "repo"
+    infer_dir = repo_root / "src" / "f5_tts" / "infer"
+    infer_dir.mkdir(parents=True)
+    (infer_dir / "infer_cli.py").write_text(
+        """
+import argparse
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--output_dir", required=True)
+parser.add_argument("--output_file", required=True)
+args, _ = parser.parse_known_args()
+Path(args.output_dir).mkdir(parents=True, exist_ok=True)
+Path(args.output_dir, args.output_file).write_bytes(b"tiny")
+""",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "utterance_id": "utt-001",
+                "ref_audio": str(tmp_path / "ref.wav"),
+                "ref_text": "Reference transcript.",
+                "gen_text": "Target text.",
+                "text": "Target text.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    args = SimpleNamespace(
+        run_id="run_tiny_wav",
+        project="Posterior-F5",
+        experiment="unit_test",
+        manifest=str(manifest),
+        artifact_root=str(tmp_path / "runs"),
+        modes=["hard"],
+        model="F5TTS_v1_Base",
+        checkpoint_id="",
+        checkpoint="",
+        checkpoint_hash="",
+        vocoder="vocos",
+        nfe_step=32,
+        cfg_strength=2.0,
+        sway_sampling_coef=-1.0,
+        speed=1.0,
+        seed=1234,
+        posterior_asr="facebook/wav2vec2-base-960h",
+        run_posterior_extraction=False,
+        whisper_model="openai/whisper-large-v3-turbo",
+        skip_whisper=False,
+        ctc_model="",
+        asr_device=None,
+        torch_dtype="float32",
+        run_inference=True,
+        inference_dry_run=False,
+        hard_ref_text_source="empty",
+        infer_device=None,
+        vocab_file="",
+        min_wav_bytes=44,
+        eval_asr="openai/whisper-large-v3-turbo",
+        run_prediction=False,
+        prediction_dry_run=False,
+        eval_device=None,
+        eval_torch_dtype="float32",
+        run_metrics=False,
+        metrics_dry_run=False,
+        language="en",
+        ctc_top_k=8,
+        fail_if_exists=True,
+    )
+
+    try:
+        module.scaffold_run(args, repo_root=repo_root)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("Expected tiny wav inference to fail")
+
+    run_root = Path(args.artifact_root) / args.run_id
+    command_row = json.loads((run_root / "generated" / "hard" / "commands.jsonl").read_text(encoding="utf-8"))
+    payload = json.loads((run_root / "run.json").read_text(encoding="utf-8"))
+
+    assert payload["status"] == "failed"
+    assert command_row["status"] == "failed"
+    assert command_row["output_exists"] is True
+    assert command_row["output_size_bytes"] == 4
+    assert "too small" in command_row["error_message"]

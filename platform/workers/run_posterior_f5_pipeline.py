@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import shutil
@@ -25,6 +26,7 @@ DEFAULT_ARTIFACT_ROOT = "mlops_artifacts/runs"
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Create a Posterior-F5 MLOps run scaffold.")
+    parser.add_argument("--config", help="Optional YAML experiment config. CLI flags override only by rerunning with desired values.")
     parser.add_argument("--run_id", help="Run id. Defaults to run_<timestamp>.")
     parser.add_argument("--project", default="Posterior-F5", help="Project name recorded in run.json.")
     parser.add_argument("--experiment", default="baseline_dev_small", help="Experiment name recorded in run.json.")
@@ -76,6 +78,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--infer_device", default=None, help="Device passed to infer_cli.py, e.g. cuda, mps, or cpu.")
     parser.add_argument("--vocab_file", default="", help="Optional vocab file passed to infer_cli.py.")
+    parser.add_argument("--min_wav_bytes", type=int, default=44, help="Minimum accepted wav file size after non-dry-run inference.")
     parser.add_argument("--eval_asr", default="openai/whisper-large-v3-turbo")
     parser.add_argument(
         "--run_prediction",
@@ -106,7 +109,78 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Fail if the run directory already exists instead of updating metadata.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.config:
+        apply_config(args, load_config(args.config))
+    return args
+
+
+def load_config(path: str | Path) -> dict[str, Any]:
+    import yaml
+
+    return yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+
+
+def apply_config(args: argparse.Namespace, config: dict[str, Any]) -> None:
+    """Apply the small experiment YAML contract to argparse options."""
+
+    scalar_map = {
+        "name": "experiment",
+        "manifest": "manifest",
+        "artifact_root": "artifact_root",
+    }
+    for source, target in scalar_map.items():
+        if config.get(source) not in (None, ""):
+            setattr(args, target, config[source])
+
+    modes = config.get("modes") or config.get("stage1_modes")
+    if modes:
+        args.modes = list(modes)
+
+    posterior = config.get("posterior") or {}
+    posterior_map = {
+        "run_extraction": "run_posterior_extraction",
+        "whisper_model": "whisper_model",
+        "skip_whisper": "skip_whisper",
+        "ctc_model": "ctc_model",
+        "ctc_top_k": "ctc_top_k",
+        "language": "language",
+    }
+    for source, target in posterior_map.items():
+        if source in posterior:
+            setattr(args, target, posterior[source])
+
+    generation = config.get("generation") or {}
+    generation_map = {
+        "model": "model",
+        "checkpoint_id": "checkpoint_id",
+        "checkpoint": "checkpoint",
+        "checkpoint_hash": "checkpoint_hash",
+        "vocoder": "vocoder",
+        "nfe_step": "nfe_step",
+        "cfg_strength": "cfg_strength",
+        "sway_sampling_coef": "sway_sampling_coef",
+        "speed": "speed",
+        "seed": "seed",
+        "run_inference": "run_inference",
+        "inference_dry_run": "inference_dry_run",
+        "hard_ref_text_source": "hard_ref_text_source",
+    }
+    for source, target in generation_map.items():
+        if source in generation:
+            setattr(args, target, generation[source])
+
+    metrics = config.get("metrics") or {}
+    metrics_map = {
+        "run_prediction": "run_prediction",
+        "prediction_dry_run": "prediction_dry_run",
+        "eval_asr": "eval_asr",
+        "run_metrics": "run_metrics",
+        "metrics_dry_run": "metrics_dry_run",
+    }
+    for source, target in metrics_map.items():
+        if source in metrics:
+            setattr(args, target, metrics[source])
 
 
 def utc_or_local_now() -> datetime:
@@ -312,6 +386,34 @@ def write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return f"sha256:{digest.hexdigest()}"
+
+
+def output_file_metadata(path: Path, *, min_bytes: int) -> dict[str, Any]:
+    metadata: dict[str, Any] = {
+        "exists": path.exists(),
+        "size_bytes": None,
+        "sha256": "",
+        "ok": False,
+    }
+    if not path.exists():
+        metadata["error_message"] = f"Missing generated wav: {path}"
+        return metadata
+
+    size = path.stat().st_size
+    metadata["size_bytes"] = size
+    metadata["sha256"] = file_sha256(path)
+    metadata["ok"] = size >= min_bytes
+    if not metadata["ok"]:
+        metadata["error_message"] = f"Generated wav is too small: {path} ({size} bytes < {min_bytes})"
+    return metadata
+
+
 def build_run_payload(
     *,
     args: argparse.Namespace,
@@ -382,6 +484,7 @@ def build_run_payload(
             "run_inference": args.run_inference,
             "inference_dry_run": args.inference_dry_run,
             "hard_ref_text_source": args.hard_ref_text_source,
+            "min_wav_bytes": args.min_wav_bytes,
         },
         "posterior": {
             "asr": posterior_source,
@@ -642,20 +745,37 @@ def run_inference_stage(
             for row in rows:
                 command = build_inference_command(args=args, repo_root=repo_root, run_root=run_root, mode=mode, row=row)
                 output_path = mode_dir / f"{row['utterance_id']}.wav"
-                command_rows.append(
-                    {
-                        "utterance_id": row["utterance_id"],
-                        "mode": mode,
-                        "command": command,
-                        "output": str(output_path.relative_to(run_root)),
-                        "dry_run": args.inference_dry_run,
-                    }
-                )
+                command_row = {
+                    "utterance_id": row["utterance_id"],
+                    "mode": mode,
+                    "command": command,
+                    "output": str(output_path.relative_to(run_root)),
+                    "dry_run": args.inference_dry_run,
+                    "status": "planned" if args.inference_dry_run else "running",
+                    "seed": args.seed,
+                    "checkpoint_id": args.checkpoint_id or "",
+                    "checkpoint": args.checkpoint or "hf://SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors",
+                    "checkpoint_hash": args.checkpoint_hash or "",
+                    "started_at": None,
+                    "finished_at": None,
+                    "elapsed_sec": None,
+                    "exit_code": None,
+                    "output_exists": False,
+                    "output_size_bytes": None,
+                    "output_sha256": "",
+                }
 
                 if args.inference_dry_run:
+                    command_rows.append(command_row)
                     continue
 
+                started_at = utc_or_local_now()
+                command_row["started_at"] = started_at.isoformat(timespec="seconds")
                 completed = subprocess.run(command, cwd=repo_root, check=False, capture_output=True, text=True, env=env)
+                finished_at = utc_or_local_now()
+                command_row["finished_at"] = finished_at.isoformat(timespec="seconds")
+                command_row["elapsed_sec"] = max((finished_at - started_at).total_seconds(), 0.0)
+                command_row["exit_code"] = completed.returncode
                 log_parts.extend(
                     [
                         "$ " + " ".join(command),
@@ -669,6 +789,25 @@ def run_inference_stage(
                     ]
                 )
                 if completed.returncode != 0:
+                    command_row["status"] = "failed"
+                    command_row["error_message"] = completed.stderr.strip() or completed.stdout.strip()
+                    command_rows.append(command_row)
+                    mode_status = "failed"
+                    overall_status = "failed"
+                    break
+
+                output_metadata = output_file_metadata(output_path, min_bytes=args.min_wav_bytes)
+                command_row["output_exists"] = output_metadata["exists"]
+                command_row["output_size_bytes"] = output_metadata["size_bytes"]
+                command_row["output_sha256"] = output_metadata["sha256"]
+                if output_metadata["ok"]:
+                    command_row["status"] = "succeeded"
+                    command_rows.append(command_row)
+                else:
+                    command_row["status"] = "failed"
+                    command_row["error_message"] = output_metadata["error_message"]
+                    command_rows.append(command_row)
+                    log_parts.append(output_metadata["error_message"])
                     mode_status = "failed"
                     overall_status = "failed"
                     break
