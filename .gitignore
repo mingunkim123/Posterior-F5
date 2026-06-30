@@ -1,6 +1,8 @@
 # Customed
 .vscode/
 tests/
+!tests/
+!tests/*.py
 runs/
 data/
 ckpts/
@@ -9,6 +11,7 @@ results/
 posterior_cache/
 experiments/
 eval_outputs/
+mlops_artifacts/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
