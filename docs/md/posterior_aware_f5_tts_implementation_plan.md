@@ -834,6 +834,18 @@ Step 64까지는 모델 아이디어를 검증할 수 있는 연구 scaffold가 
 | Step 93 | `src/f5_tts/eval/eval_posterior_f5.py` | generation metadata가 있으면 RTF/latency를 metric에 병합한다. speaker similarity와 UTMOS는 별도 파일을 읽는 optional input으로 둔다. | toy metadata smoke |
 | Step 94 | 없음 | dev smoke generated wav를 별도 eval ASR로 transcribe하고 metrics/table까지 생성한다. | `metrics/summary.csv`, table 존재 |
 
+진행 기록:
+
+- Step 86: prediction JSONL에 subset, reference/target text, ref text, eval ASR id, generated audio path를 보존하도록 platform worker를 확장했다.
+- Step 87: `eval_posterior_f5.py`가 per-utterance metrics JSONL과 subset별 aggregate를 출력하도록 확장했다.
+- Step 88: `tests/test_eval_posterior_f5.py`를 추가해 WER/CER/Sub/Del/Ins, deletion rate, subset aggregation, generation metadata 병합을 검증했다.
+- Step 89: `src/f5_tts/eval/bootstrap_significance.py`를 추가했다.
+- Step 90: `tests/test_bootstrap_significance.py`로 paired diff와 fixed-seed reproducibility를 고정했다.
+- Step 91: `src/f5_tts/eval/make_result_tables.py`를 추가해 summary JSON에서 CSV/Markdown paper table을 생성한다.
+- Step 92: `tests/test_make_result_tables.py`로 subset table expansion과 markdown formatting을 검증했다.
+- Step 93: generation command metadata의 elapsed time, output size/hash가 per-utterance metric row에 병합된다. speaker similarity와 UTMOS는 아직 별도 metric file 입력으로 남긴다.
+- Step 94: 별도 eval ASR real transcription은 GPU/ASR 환경에서 실행할 항목으로 남고, 이번 pass에서는 dry-run prediction과 toy metric/table path를 검증했다.
+
 ### E. Stage 1 논문 최소 결과 고정
 
 | Step | 파일 | 작업 | 확인 |

@@ -897,6 +897,10 @@ def run_prediction_stage(
             prediction_row = {
                 "utterance_id": row["utterance_id"],
                 "mode": mode,
+                "subset": row.get("subset"),
+                "reference": row.get("text") or row.get("reference") or row.get("gen_text") or "",
+                "target_text": row.get("gen_text"),
+                "ref_text": row.get("ref_text"),
                 "generated_audio": str(wav_path.relative_to(run_root)),
                 "hypothesis": "",
                 "eval_asr": args.eval_asr,
@@ -1033,6 +1037,8 @@ def run_metrics_stage(
     for mode in modes:
         prediction_path = run_root / "predictions" / f"{mode}.jsonl"
         output_path = run_root / "metrics" / f"{mode}.metrics.json"
+        per_utterance_path = run_root / "metrics" / f"{mode}.per_utterance.jsonl"
+        generation_metadata_path = run_root / "generated" / mode / "commands.jsonl"
         log_path = run_root / "logs" / f"metrics_{mode}.log"
         command = [
             sys.executable,
@@ -1043,11 +1049,15 @@ def run_metrics_stage(
             str(prediction_path),
             "--output",
             str(output_path),
+            "--per_utterance_output",
+            str(per_utterance_path),
             "--mode",
             mode,
             "--posterior_file",
             str(posterior_file) if posterior_file.exists() else "",
         ]
+        if generation_metadata_path.exists():
+            command.extend(["--generation_metadata", str(generation_metadata_path)])
 
         if args.metrics_dry_run:
             metrics = {
@@ -1059,6 +1069,7 @@ def run_metrics_stage(
                 "posterior_file": str(posterior_file) if posterior_file.exists() else "",
             }
             write_json(output_path, metrics)
+            per_utterance_path.write_text("", encoding="utf-8")
             log_path.write_text("$ " + " ".join(command) + "\nDRY_RUN: true\n", encoding="utf-8")
             mode_status = "planned"
         else:
@@ -1115,6 +1126,7 @@ def run_metrics_stage(
                 "mode": mode,
                 "status": mode_status,
                 "metrics": str(output_path.relative_to(run_root)),
+                "per_utterance": str(per_utterance_path.relative_to(run_root)),
                 "log": str(log_path.relative_to(run_root)),
             }
         )
@@ -1122,6 +1134,12 @@ def run_metrics_stage(
             break
 
     write_summary_files(run_root, metrics_by_mode)
+    combined_per_utterance = []
+    for mode in modes:
+        per_mode_path = run_root / "metrics" / f"{mode}.per_utterance.jsonl"
+        if per_mode_path.exists():
+            combined_per_utterance.extend(iter_jsonl(per_mode_path))
+    write_jsonl(run_root / "metrics" / "per_utterance.jsonl", combined_per_utterance)
     if args.metrics_dry_run and overall_status == "succeeded":
         stage_status = "planned"
     else:
@@ -1131,7 +1149,14 @@ def run_metrics_stage(
         "status": stage_status,
         "dry_run": args.metrics_dry_run,
         "modes": mode_summaries,
-        "outputs": ["metrics/<mode>.metrics.json", "metrics/summary.json", "metrics/summary.csv", "logs/metrics_<mode>.log"],
+        "outputs": [
+            "metrics/<mode>.metrics.json",
+            "metrics/<mode>.per_utterance.jsonl",
+            "metrics/per_utterance.jsonl",
+            "metrics/summary.json",
+            "metrics/summary.csv",
+            "logs/metrics_<mode>.log",
+        ],
     }
 
 
