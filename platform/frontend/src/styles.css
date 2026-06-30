@@ -291,6 +291,8 @@ th {
 }
 
 .status-planned,
+.status-queued,
+.status-submitted,
 .status-running {
   color: #8b6425;
   background: #fbf1df;

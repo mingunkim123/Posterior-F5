@@ -20,6 +20,20 @@ services:
       retries: 5
       start_period: 10s
 
+  worker:
+    build:
+      context: .
+      dockerfile: platform/docker/Dockerfile.api
+    image: posterior-f5-api:local
+    command: ["python", "platform/workers/run_job_worker.py", "--poll_interval", "2"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./mlops_artifacts:/app/mlops_artifacts
+      - ./data:/app/data:ro
+      - ./ckpts:/app/ckpts:ro
+      - ./posterior_cache:/app/posterior_cache
+
   frontend:
     build:
       context: .

@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
-import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -83,8 +81,8 @@ def list_runs(*, artifact_root: Path | None = None) -> list[dict[str, Any]]:
             "project": job.get("project"),
             "experiment": job.get("experiment"),
             "status": job.get("status", "running"),
-            "created_at": job.get("started_at"),
-            "updated_at": job.get("finished_at") or job.get("started_at"),
+            "created_at": job.get("queued_at") or job.get("started_at"),
+            "updated_at": job.get("finished_at") or job.get("started_at") or job.get("queued_at"),
             "modes": job.get("modes", []),
             "stages": [{"name": "queued", "status": job.get("status", "running")}],
             "artifact_root": str(job_json.parent),
@@ -179,6 +177,23 @@ def load_run_logs(run_id: str, *, artifact_root: Path | None = None, max_bytes: 
     return {"run_id": run_id, "files": files}
 
 
+def list_queued_jobs(*, artifact_root: Path | None = None) -> list[dict[str, Any]]:
+    root = artifact_root or default_artifact_root()
+    if not root.exists():
+        return []
+
+    jobs: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*/job.json")):
+        try:
+            job = read_json(path)
+        except json.JSONDecodeError:
+            continue
+        if job.get("status") == "queued":
+            job.setdefault("run_id", path.parent.name)
+            jobs.append(job)
+    return sorted(jobs, key=lambda item: item.get("queued_at") or "")
+
+
 def build_pipeline_command(payload: dict[str, Any], *, artifact_root: Path | None = None) -> list[str]:
     repo_root = repository_root()
     script = repo_root / "platform" / "workers" / "run_posterior_f5_pipeline.py"
@@ -224,23 +239,6 @@ def build_pipeline_command(payload: dict[str, Any], *, artifact_root: Path | Non
     return command
 
 
-def finalize_job(process: subprocess.Popen[str], run_id: str, run_root: Path, job_file: Path) -> None:
-    exit_code = process.wait()
-    job = read_json(job_file) if job_file.exists() else {"run_id": run_id}
-    job["exit_code"] = exit_code
-    job["finished_at"] = timestamp()
-    job["status"] = "succeeded" if exit_code == 0 else "failed"
-    run_json = run_root / "run.json"
-    if run_json.exists():
-        try:
-            job["run"] = read_json(run_json)
-            job["status"] = job["run"].get("status", job["status"])
-        except json.JSONDecodeError:
-            job["status"] = "failed"
-            job["error_message"] = "run.json is not valid JSON"
-    write_json(job_file, job)
-
-
 def start_run(payload: dict[str, Any], *, artifact_root: Path | None = None) -> dict[str, Any]:
     payload = dict(payload)
     run_id = payload.get("run_id") or generate_run_id()
@@ -259,49 +257,17 @@ def start_run(payload: dict[str, Any], *, artifact_root: Path | None = None) -> 
         "project": payload.get("project"),
         "experiment": payload.get("experiment"),
         "modes": payload.get("modes", []),
-        "status": "running",
+        "status": "queued",
         "pid": None,
         "command": command,
-        "started_at": timestamp(),
+        "queued_at": timestamp(),
+        "started_at": None,
+        "finished_at": None,
+        "exit_code": None,
         "stdout_log": str(stdout_path.relative_to(run_root)),
         "stderr_log": str(stderr_path.relative_to(run_root)),
     }
     write_json(job_file, job)
-
-    stdout_file = stdout_path.open("w", encoding="utf-8")
-    stderr_file = stderr_path.open("w", encoding="utf-8")
-    try:
-        process = subprocess.Popen(
-            command,
-            cwd=repository_root(),
-            stdout=stdout_file,
-            stderr=stderr_file,
-            text=True,
-        )
-    except OSError as exc:
-        stdout_file.close()
-        stderr_file.close()
-        job["status"] = "failed"
-        job["exit_code"] = 1
-        job["finished_at"] = timestamp()
-        job["error_message"] = str(exc)
-        write_json(job_file, job)
-        return {
-            "status": "failed",
-            "run_id": run_id,
-            "exit_code": 1,
-            "command": command,
-            "stdout": "",
-            "stderr": str(exc),
-            "job": job,
-        }
-
-    job["pid"] = process.pid
-    write_json(job_file, job)
-    stdout_file.close()
-    stderr_file.close()
-    thread = threading.Thread(target=finalize_job, args=(process, run_id, run_root, job_file), daemon=True)
-    thread.start()
 
     response = {
         "status": "submitted",

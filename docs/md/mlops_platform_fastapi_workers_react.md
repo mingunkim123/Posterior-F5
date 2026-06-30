@@ -908,3 +908,686 @@ dev_small MVP
 7. 처음부터 범용 MLOps를 만들지 말고 Posterior-F5를 완벽히 돌린 뒤 일반화한다.
 
 좋은 첫 버전은 작고 선명하다. `dev_small` 하나가 끝까지 돌고, 웹에서 결과를 듣고, 보고, CSV로 뽑을 수 있으면 이미 플랫폼의 뼈대는 살아 있는 것이다.
+
+## 19. 현재 구현 상태와 앞으로의 전체 Step
+
+이 섹션은 실제 개발 진행표다. 위쪽 섹션들이 플랫폼의 설계 철학과 목표 구조를 설명한다면, 여기서는 앞으로 무엇을 어떤 순서로 만들지 정리한다.
+
+현재 구현은 아래 지점까지 와 있다.
+
+```text
+Step 1-4   run artifact contract + pipeline scaffold
+Step 5     metrics aggregation
+Step 6     FastAPI backend
+Step 7     React dashboard
+Step 8     local Docker Compose platform
+Step 9     Docker 실행 검증은 아직 로컬 Docker 환경에서 필요
+Step 10    dashboard에서 run 생성
+Step 11    job polling + logs 표시
+Step 12    API와 worker 분리
+```
+
+현재 구조는 다음과 같다.
+
+```mermaid
+flowchart TD
+    UI[React Dashboard] --> API[FastAPI API]
+    API --> J[job.json queued]
+    W[Python Worker] --> J
+    W --> P[run_posterior_f5_pipeline.py]
+    P --> A[mlops_artifacts/runs/run_id]
+    API --> A
+    A --> UI
+```
+
+아직 Redis, Postgres, MinIO는 붙이지 않았다. 이 선택은 의도적이다. 지금 단계의 우선순위는 “로컬에서 하나의 실험을 끝까지 생성, 실행, 확인, 비교하는 것”이다.
+
+### Step 13. Docker Compose End-to-End Smoke Test
+
+목표:
+
+```text
+docker compose up --build
+  -> API health 확인
+  -> dashboard 접속
+  -> New Run 생성
+  -> job queued 확인
+  -> worker running/completed 확인
+  -> logs 표시 확인
+  -> mlops_artifacts/runs/<run_id>/ 생성 확인
+```
+
+해야 할 일:
+
+1. Docker Desktop 실행 상태 확인
+2. `docker compose up --build` 실행
+3. `http://127.0.0.1:8000/health` 확인
+4. `http://127.0.0.1:5174` 확인
+5. scaffold-only run 생성
+6. worker가 `job.json`을 `queued -> running -> completed`로 바꾸는지 확인
+7. dashboard의 Job Logs 패널에서 `job.stdout.log`, `job.stderr.log` 표시 확인
+
+성공 기준:
+
+```text
+mlops_artifacts/runs/<run_id>/
+  job.json
+  run.json
+  config.yaml
+  logs/job.stdout.log
+  logs/job.stderr.log
+```
+
+이 단계가 끝나야 “플랫폼이 실제로 켜진다”고 말할 수 있다.
+
+### Step 14. Sample Manifest와 Demo Preset 추가
+
+목표는 사용자가 매번 manifest path를 직접 기억하지 않아도, dashboard에서 바로 smoke run을 만들 수 있게 하는 것이다.
+
+추가할 것:
+
+```text
+platform/samples/
+  manifests/
+    dev_smoke.jsonl
+  README.md
+```
+
+dashboard에는 preset을 둔다.
+
+| preset | 목적 |
+| --- | --- |
+| `scaffold_only` | artifact contract만 확인 |
+| `posterior_text_only` | Whisper 없이 manifest text로 posterior 생성 |
+| `dry_inference_plan` | inference command 생성만 확인 |
+| `metrics_dry_run` | prediction/metrics 파일 경로 확인 |
+
+성공 기준:
+
+```text
+대시보드에서 preset 선택
+  -> manifest 자동 입력
+  -> mode 자동 선택
+  -> 안전한 dry-run 옵션 자동 설정
+```
+
+### Step 15. Run Detail UX 개선
+
+Step11에서 logs는 보이지만, 아직 연구자가 보기 좋은 수준은 아니다. Step15는 “실패 원인 파악 시간을 줄이는 UI”를 만드는 단계다.
+
+개선할 것:
+
+1. stage별 상태를 더 명확히 표시
+2. stage 클릭 시 관련 log만 필터링
+3. error message를 상단에 표시
+4. command line 복사 버튼
+5. `run.json`, `config.yaml`, `summary.csv` 다운로드 링크
+6. queued/running/completed/failed 색상 체계 정리
+
+Run Detail은 아래처럼 읽혀야 한다.
+
+```text
+Run Header
+  run_id, status, experiment, created_at, checkpoint
+
+Pipeline
+  scaffold -> posterior -> inference -> prediction -> metrics
+
+Logs
+  selected stage log
+  stdout/stderr
+  command
+
+Artifacts
+  run.json
+  config.yaml
+  predictions
+  metrics
+```
+
+### Step 16. 실제 Inference Worker Image 준비
+
+현재 Docker worker는 API와 같은 lightweight image를 쓴다. 이것은 scaffold/dry-run에는 좋지만, 실제 F5-TTS inference를 돌리기에는 부족할 수 있다.
+
+Step16에서는 worker image를 분리한다.
+
+```text
+platform/docker/
+  Dockerfile.api
+  Dockerfile.frontend
+  Dockerfile.worker-gpu
+```
+
+역할 분리:
+
+| image | 역할 |
+| --- | --- |
+| `api` | FastAPI control plane |
+| `frontend` | React dashboard static serving |
+| `worker-gpu` | torch, torchaudio, F5-TTS inference, ASR evaluation |
+
+worker image는 아래를 포함해야 한다.
+
+```text
+torch
+torchaudio
+ffmpeg
+sox
+libsndfile
+transformers
+vocos
+F5-TTS local package
+```
+
+Docker Compose에서는 나중에 이렇게 나눈다.
+
+```yaml
+services:
+  api:
+    ...
+  frontend:
+    ...
+  worker:
+    build:
+      dockerfile: platform/docker/Dockerfile.worker-gpu
+    volumes:
+      - ./mlops_artifacts:/app/mlops_artifacts
+      - ./data:/app/data:ro
+      - ./ckpts:/app/ckpts:ro
+```
+
+성공 기준:
+
+```text
+worker-gpu 컨테이너 안에서
+python platform/workers/run_job_worker.py --once
+실행 시 실제 inference dry-run이 아니라 wav 생성까지 가능
+```
+
+### Step 17. Checkpoint Registry 추가
+
+논문 실험에서는 어떤 checkpoint를 썼는지가 매우 중요하다. 단순 path 문자열만 있으면 나중에 재현성이 약해진다.
+
+추가할 파일:
+
+```text
+platform/config/checkpoints.yaml
+```
+
+예시:
+
+```yaml
+checkpoints:
+  f5tts_v1_base_hf:
+    model: F5TTS_v1_Base
+    path: hf://SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors
+    vocoder: vocos
+    notes: upstream base checkpoint
+
+  posterior_f5_finetune_001:
+    model: F5TTS_v1_Base
+    path: ckpts/posterior_f5/run_001/model_last.pt
+    vocoder: vocos
+    git_commit: ...
+    dataset: ...
+```
+
+dashboard의 New Run 폼은 checkpoint path 직접 입력 대신 registry 선택을 지원한다.
+
+성공 기준:
+
+```text
+run.json
+  model.checkpoint_id
+  model.checkpoint_path
+  model.checkpoint_hash
+```
+
+### Step 18. Experiment Comparison View 강화
+
+지금 dashboard는 하나의 run을 보는 쪽에 가깝다. 논문을 쓰려면 여러 run을 비교해야 한다.
+
+추가할 화면:
+
+```text
+Compare
+  rows: run_id / experiment / checkpoint
+  columns: mode별 WER, CER, Sub, Del, Ins
+  filters: subset, seed, checkpoint, mode
+```
+
+필요한 API:
+
+```text
+GET /experiments
+GET /experiments/{experiment_id}/runs
+GET /compare?run_ids=...
+```
+
+처음에는 DB 없이 `mlops_artifacts/runs/*/metrics/summary.json`을 읽어서 비교하면 된다.
+
+성공 기준:
+
+```text
+hard vs oracle vs length_only vs soft_ctc
+여러 run의 WER/CER를 한 화면에서 정렬/비교
+```
+
+### Step 19. Paper Export 기능
+
+플랫폼이 논문에 직접 도움이 되려면, dashboard에서 본 결과를 논문 표/그림으로 바로 빼낼 수 있어야 한다.
+
+추가할 export:
+
+```text
+GET /runs/{run_id}/exports/main_table.csv
+GET /runs/{run_id}/exports/error_breakdown.csv
+GET /runs/{run_id}/exports/utterance_examples.jsonl
+GET /experiments/{experiment_id}/exports/ablation_table.csv
+```
+
+생성할 파일:
+
+```text
+mlops_artifacts/runs/<run_id>/paper_exports/
+  main_table.csv
+  error_breakdown.csv
+  qualitative_examples.jsonl
+  README.md
+```
+
+성공 기준:
+
+```text
+논문 table을 만들 때 수작업 복붙을 줄이고,
+run artifact에서 바로 CSV를 생성할 수 있다.
+```
+
+### Step 20. SQLite Metadata Cache 추가
+
+지금은 파일 시스템만으로 충분하다. 하지만 run이 많아지면 매번 모든 JSON을 scan하는 것이 느려진다. 이때 SQLite를 metadata cache로 붙인다.
+
+중요한 원칙:
+
+```text
+source of truth = mlops_artifacts/runs/<run_id>/
+cache/search index = SQLite
+```
+
+즉 DB가 깨져도 artifact directory만 있으면 복구 가능해야 한다.
+
+추가할 것:
+
+```text
+platform/backend/app/db/
+  models.py
+  session.py
+  migrations/
+
+platform/backend/app/services/indexer.py
+```
+
+관리할 table:
+
+```text
+runs
+jobs
+metrics
+artifacts
+utterances
+```
+
+성공 기준:
+
+```text
+python platform/backend/app/services/indexer.py
+  -> mlops_artifacts를 scan
+  -> SQLite index 재생성
+```
+
+### Step 21. Redis Queue로 교체
+
+파일 기반 queue는 로컬 MVP에는 충분하다. 하지만 동시에 여러 worker를 돌리거나 retry/cancel을 잘 하려면 Redis queue가 필요하다.
+
+후보:
+
+| queue | 추천도 | 이유 |
+| --- | --- | --- |
+| RQ | 높음 | 단순하고 Python worker와 잘 맞음 |
+| Celery | 중간 | 강력하지만 설정이 무거움 |
+| Dramatiq | 중간 | 깔끔하지만 생태계가 작음 |
+
+처음 교체는 RQ를 추천한다.
+
+변경 구조:
+
+```text
+POST /runs
+  -> job metadata 저장
+  -> Redis queue enqueue
+
+worker
+  -> Redis queue consume
+  -> run_posterior_f5_pipeline.py 실행
+  -> artifact 저장
+  -> metadata update
+```
+
+성공 기준:
+
+```text
+docker compose up
+  api
+  frontend
+  redis
+  worker
+```
+
+### Step 22. Cancel / Retry / Resume
+
+실험 플랫폼에서 반드시 필요한 운영 기능이다.
+
+추가할 API:
+
+```text
+POST /runs/{run_id}/cancel
+POST /runs/{run_id}/retry
+POST /runs/{run_id}/resume
+```
+
+처음 구현은 다음 정도면 충분하다.
+
+| 기능 | MVP 동작 |
+| --- | --- |
+| cancel | queued job은 cancelled로 변경 |
+| retry | failed job의 command를 새 job으로 복사 |
+| resume | 이미 완료된 stage는 skip하고 다음 stage부터 실행 |
+
+resume을 위해서는 stage output 존재 여부를 확인해야 한다.
+
+```text
+posterior stage complete?
+  posterior_cache/run.posterior.jsonl exists
+
+inference hard complete?
+  generated/hard/*.wav exists
+
+metrics complete?
+  metrics/summary.json exists
+```
+
+성공 기준:
+
+```text
+실패한 run을 처음부터 다시 돌리지 않고,
+실패 stage부터 재시작할 수 있다.
+```
+
+### Step 23. Dataset / Manifest Registry
+
+manifest path를 매번 입력하는 방식은 오래 가지 못한다. dataset registry가 필요하다.
+
+추가할 파일:
+
+```text
+platform/config/datasets.yaml
+```
+
+예시:
+
+```yaml
+datasets:
+  dev_small:
+    manifest: data/manifests/dev_small.jsonl
+    language: en
+    num_utterances: 32
+    purpose: smoke test
+
+  eval_clean:
+    manifest: data/manifests/eval_clean.jsonl
+    language: en
+    purpose: paper main table
+```
+
+dashboard New Run은 dataset dropdown을 제공한다.
+
+성공 기준:
+
+```text
+dataset 선택
+  -> manifest 자동 입력
+  -> language 자동 입력
+  -> subset 정보 표시
+```
+
+### Step 24. Audio / Utterance Inspector 고도화
+
+논문 품질 분석에는 utterance별 비교가 중요하다.
+
+추가할 것:
+
+1. reference audio player
+2. mode별 generated audio 동시 비교
+3. target text, prediction text, reference text 표시
+4. WER diff highlight
+5. posterior entropy 표시
+6. failure type filter
+
+필요한 artifact:
+
+```text
+metrics/per_utterance.jsonl
+posterior_cache/run.posterior.jsonl
+predictions/<mode>.jsonl
+generated/<mode>/<utterance_id>.wav
+```
+
+성공 기준:
+
+```text
+특정 utterance에서 soft_ctc가 hard보다 왜 좋은지/나쁜지
+웹에서 바로 듣고 읽으며 판단할 수 있다.
+```
+
+### Step 25. Observability와 Structured Logs
+
+지금 로그는 텍스트 파일이다. 다음 단계에서는 사람이 읽기 좋은 로그와 기계가 파싱할 수 있는 로그를 분리한다.
+
+추가할 파일:
+
+```text
+logs/job.stdout.log
+logs/job.stderr.log
+logs/events.jsonl
+```
+
+`events.jsonl` 예시:
+
+```json
+{"time":"...","level":"info","stage":"inference","mode":"soft_ctc","message":"started"}
+{"time":"...","level":"error","stage":"metrics","message":"prediction file missing"}
+```
+
+dashboard는 `events.jsonl`을 읽어서 timeline을 그릴 수 있다.
+
+성공 기준:
+
+```text
+텍스트 로그를 뒤지지 않아도
+어느 stage/mode에서 실패했는지 바로 보인다.
+```
+
+### Step 26. S3 또는 MinIO Artifact Store
+
+로컬 파일 시스템은 혼자 쓸 때 좋다. 여러 머신이나 서버로 확장하면 object storage가 필요하다.
+
+확장 순서:
+
+```text
+local filesystem
+  -> MinIO local
+  -> S3-compatible storage
+```
+
+중요한 점:
+
+```text
+artifact URI는 추상화한다.
+
+local:
+  mlops_artifacts/runs/<run_id>/...
+
+s3:
+  s3://posterior-f5/runs/<run_id>/...
+```
+
+성공 기준:
+
+```text
+dashboard는 local path인지 S3 URI인지 몰라도 artifact를 열 수 있다.
+```
+
+### Step 27. Multi-Worker / GPU Pool
+
+실제 실험이 커지면 worker를 여러 개 띄워야 한다.
+
+분리 방식:
+
+| worker type | 역할 |
+| --- | --- |
+| `worker-cpu` | metrics aggregation, file indexing |
+| `worker-asr` | posterior extraction, evaluation ASR |
+| `worker-tts` | F5-TTS inference |
+| `worker-gpu` | GPU가 필요한 통합 작업 |
+
+queue routing:
+
+```text
+posterior jobs -> asr queue
+inference jobs -> tts queue
+metrics jobs -> cpu queue
+```
+
+성공 기준:
+
+```text
+inference worker 2개를 띄우면
+mode별 inference가 병렬로 처리된다.
+```
+
+### Step 28. Auth / User / Project 권한
+
+혼자 쓰는 연구 도구라면 auth는 나중 문제다. 하지만 포트폴리오나 제품 방향이면 필요해진다.
+
+추가할 개념:
+
+```text
+User
+Organization
+Project
+Role
+API Token
+```
+
+이 단계에서 NestJS gateway를 고려할 수 있다.
+
+```text
+React
+  -> NestJS Gateway
+  -> FastAPI ML Control Plane
+```
+
+단, ML 실행과 artifact contract는 계속 Python/FastAPI 쪽에 두는 것이 좋다.
+
+### Step 29. Deployment
+
+배포는 과하게 시작하지 않는다.
+
+추천 순서:
+
+```text
+local docker compose
+  -> single VM docker compose
+  -> Render/Fly.io style managed services
+  -> Kubernetes only if really needed
+```
+
+초기 배포 구성:
+
+```text
+VM
+  docker compose
+    api
+    frontend
+    worker
+    redis
+    postgres
+    minio
+```
+
+성공 기준:
+
+```text
+다른 컴퓨터에서 git clone 후
+docker compose up --build
+로 dashboard까지 뜬다.
+```
+
+### Step 30. 포트폴리오 정리
+
+MLOps 커리어를 목표로 한다면, 플랫폼 자체를 설명할 수 있어야 한다.
+
+정리할 문서:
+
+```text
+docs/md/mlops_platform_fastapi_workers_react.md
+docs/md/posterior_f5_paper_experiment_flow.md
+platform/docker/README.md
+platform/README.md
+```
+
+포트폴리오에서 강조할 포인트:
+
+1. artifact-first experiment tracking
+2. FastAPI control plane
+3. file-backed queue에서 worker 분리
+4. React dashboard
+5. Docker Compose local platform
+6. reproducible paper pipeline
+7. future path to Redis/Postgres/S3/GPU workers
+
+성공 기준:
+
+```text
+README만 읽어도
+왜 이 플랫폼을 만들었고,
+어떤 MLOps 문제를 해결하고,
+어떻게 확장할지 이해된다.
+```
+
+## 20. 추천 진행 순서 요약
+
+앞으로는 아래 순서를 추천한다.
+
+```text
+Step 13  Docker Compose end-to-end smoke test
+Step 14  sample manifest + demo preset 추가
+Step 15  Run Detail UX와 logs/stage view 개선
+Step 16  실제 inference 가능한 worker image 분리
+Step 17  checkpoint registry
+Step 18  experiment comparison view
+Step 19  paper export
+Step 20  SQLite metadata cache
+Step 21  Redis queue
+Step 22  cancel/retry/resume
+Step 23  dataset/manifest registry
+Step 24  utterance inspector 고도화
+Step 25  structured logs/events timeline
+Step 26  MinIO/S3 artifact store
+Step 27  multi-worker/GPU pool
+Step 28  auth/user/project 권한
+Step 29  deployment
+Step 30  portfolio documentation
+```
+
+가장 가까운 다음 행동은 Step13이다. 새 기능을 더 붙이기 전에 Docker Compose로 API, frontend, worker가 실제로 함께 움직이는지 확인해야 한다. Step13이 끝나면 Step14와 Step15를 통해 “매번 쓰고 싶은 도구”로 다듬고, 그 다음 Step16부터 실제 무거운 inference worker를 강화하는 것이 좋다.

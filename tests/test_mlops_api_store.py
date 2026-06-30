@@ -1,7 +1,6 @@
 import json
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 
@@ -98,14 +97,23 @@ def test_run_store_starts_job_and_collects_logs(tmp_path):
 
     assert response["status"] == "submitted"
     assert response["run_id"] == "run_async_job"
+    assert run_store.load_run_job("run_async_job", artifact_root=tmp_path / "runs")["status"] == "queued"
 
-    job = {}
-    for _ in range(50):
-        job = run_store.load_run_job("run_async_job", artifact_root=tmp_path / "runs")
-        if job["status"] != "running":
-            break
-        time.sleep(0.1)
+    subprocess.run(
+        [
+            sys.executable,
+            "platform/workers/run_job_worker.py",
+            "--artifact_root",
+            str(tmp_path / "runs"),
+            "--once",
+        ],
+        cwd=Path.cwd(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
+    job = run_store.load_run_job("run_async_job", artifact_root=tmp_path / "runs")
     run = run_store.load_run("run_async_job", artifact_root=tmp_path / "runs")
     logs = run_store.load_run_logs("run_async_job", artifact_root=tmp_path / "runs")
 
