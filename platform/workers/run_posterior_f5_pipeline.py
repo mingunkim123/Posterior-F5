@@ -38,7 +38,9 @@ def parse_args() -> argparse.Namespace:
         help="Mode to include. May be passed multiple times. Defaults to baseline modes.",
     )
     parser.add_argument("--model", default="F5TTS_v1_Base", help="F5-TTS model name.")
+    parser.add_argument("--checkpoint_id", default="", help="Checkpoint registry id.")
     parser.add_argument("--checkpoint", default="", help="Optional checkpoint path or URI.")
+    parser.add_argument("--checkpoint_hash", default="", help="Checkpoint hash or immutable provenance fingerprint.")
     parser.add_argument("--vocoder", default="vocos", help="Vocoder name.")
     parser.add_argument("--nfe_step", type=int, default=32)
     parser.add_argument("--cfg_strength", type=float, default=2.0)
@@ -365,7 +367,10 @@ def build_run_payload(
         "artifact_root": str(run_root),
         "model": {
             "name": args.model,
+            "checkpoint_id": args.checkpoint_id or None,
             "checkpoint": checkpoint,
+            "checkpoint_path": checkpoint,
+            "checkpoint_hash": args.checkpoint_hash or "",
             "vocoder": args.vocoder,
         },
         "generation": {
@@ -583,6 +588,16 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as file:
         for row in rows:
             file.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def append_event(run_root: Path, *, level: str, stage: str, message: str, mode: str | None = None) -> None:
+    event = {"time": utc_or_local_now().isoformat(timespec="seconds"), "level": level, "stage": stage, "message": message}
+    if mode:
+        event["mode"] = mode
+    events_path = run_root / "logs" / "events.jsonl"
+    events_path.parent.mkdir(parents=True, exist_ok=True)
+    with events_path.open("a", encoding="utf-8") as file:
+        file.write(json.dumps(event, ensure_ascii=False) + "\n")
 
 
 def run_inference_stage(
@@ -1012,6 +1027,7 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
         ],
     }
     stages = [scaffold_stage]
+    append_event(run_root, level="info", stage="scaffold", message="succeeded")
     write_run_payload(
         args=args,
         run_id=run_id,
@@ -1024,6 +1040,7 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
     )
 
     if args.run_posterior_extraction:
+        append_event(run_root, level="info", stage="posterior_extraction", message="started")
         running_posterior_stage = {
             "name": "posterior_extraction",
             "status": "running",
@@ -1048,6 +1065,7 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
         )
         stages = [scaffold_stage, posterior_stage]
         if posterior_stage["status"] != "succeeded":
+            append_event(run_root, level="error", stage="posterior_extraction", message=posterior_stage.get("error_message") or "failed")
             write_run_payload(
                 args=args,
                 run_id=run_id,
@@ -1060,8 +1078,10 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
                 error_message=posterior_stage.get("error_message"),
             )
             raise RuntimeError(f"Posterior extraction failed; see {run_root / posterior_stage['log']}")
+        append_event(run_root, level="info", stage="posterior_extraction", message="succeeded")
 
     if args.run_inference:
+        append_event(run_root, level="info", stage="inference", message="started")
         running_inference_stage = {
             "name": "inference",
             "status": "running",
@@ -1087,6 +1107,7 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
         )
         stages = [*stages, inference_stage]
         if inference_stage["status"] == "failed":
+            append_event(run_root, level="error", stage="inference", message="failed")
             write_run_payload(
                 args=args,
                 run_id=run_id,
@@ -1099,8 +1120,10 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
                 error_message="Inference failed; inspect logs/inference_<mode>.log",
             )
             raise RuntimeError("Inference failed; inspect logs/inference_<mode>.log")
+        append_event(run_root, level="info", stage="inference", message=inference_stage["status"])
 
     if args.run_prediction:
+        append_event(run_root, level="info", stage="prediction", message="started")
         running_prediction_stage = {
             "name": "prediction",
             "status": "running",
@@ -1126,6 +1149,7 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
         )
         stages = [*stages, prediction_stage]
         if prediction_stage["status"] == "failed":
+            append_event(run_root, level="error", stage="prediction", message="failed")
             write_run_payload(
                 args=args,
                 run_id=run_id,
@@ -1138,8 +1162,10 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
                 error_message="Prediction failed; inspect logs/prediction_<mode>.log",
             )
             raise RuntimeError("Prediction failed; inspect logs/prediction_<mode>.log")
+        append_event(run_root, level="info", stage="prediction", message=prediction_stage["status"])
 
     if args.run_metrics:
+        append_event(run_root, level="info", stage="metrics", message="started")
         running_metrics_stage = {
             "name": "metrics",
             "status": "running",
@@ -1164,6 +1190,7 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
         )
         stages = [*stages, metrics_stage]
         if metrics_stage["status"] == "failed":
+            append_event(run_root, level="error", stage="metrics", message="failed")
             write_run_payload(
                 args=args,
                 run_id=run_id,
@@ -1176,6 +1203,7 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
                 error_message="Metrics failed; inspect logs/metrics_<mode>.log",
             )
             raise RuntimeError("Metrics failed; inspect logs/metrics_<mode>.log")
+        append_event(run_root, level="info", stage="metrics", message=metrics_stage["status"])
 
     write_run_payload(
         args=args,
@@ -1187,6 +1215,7 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
         git=git,
         stages=stages,
     )
+    append_event(run_root, level="info", stage="run", message="completed")
     return run_root
 
 

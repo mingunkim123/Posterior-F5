@@ -1,0 +1,2 @@
+-- Metadata cache schema is currently rebuilt from db.models.SCHEMA.
+-- This file reserves the migrations directory required by the platform plan.

@@ -1,0 +1,21 @@
+checkpoints:
+  f5tts_v1_base_hf:
+    model: F5TTS_v1_Base
+    path: hf://SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors
+    vocoder: vocos
+    checkpoint_hash: hf:SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors
+    notes: upstream base checkpoint
+
+  f5tts_base_hf:
+    model: F5TTS_Base
+    path: hf://SWivid/F5-TTS/F5TTS_Base/model_1200000.safetensors
+    vocoder: vocos
+    checkpoint_hash: hf:SWivid/F5-TTS/F5TTS_Base/model_1200000.safetensors
+    notes: upstream F5-TTS base checkpoint
+
+  posterior_f5_local_latest:
+    model: F5TTS_v1_Base
+    path: ckpts/posterior_f5/latest/model_last.pt
+    vocoder: vocos
+    checkpoint_hash: ""
+    notes: local placeholder for the latest Posterior-F5 finetune

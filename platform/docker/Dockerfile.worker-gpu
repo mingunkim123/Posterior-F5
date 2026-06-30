@@ -1,0 +1,59 @@
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV HF_HOME=/root/.cache/huggingface
+ENV TORCH_HOME=/root/.cache/torch
+
+WORKDIR /app
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        curl \
+        ffmpeg \
+        git \
+        libsndfile1 \
+        sox \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY platform/backend ./platform/backend
+COPY platform/config ./platform/config
+COPY platform/samples ./platform/samples
+COPY platform/workers ./platform/workers
+
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install --no-cache-dir \
+        "numpy<2" \
+        accelerate \
+        cached_path \
+        click \
+        ema_pytorch \
+        fastapi \
+        "hydra-core>=1.3.0" \
+        jiwer \
+        librosa \
+        pydub \
+        pypinyin \
+        redis \
+        rjieba \
+        rq \
+        safetensors \
+        soundfile \
+        tomli \
+        torchdiffeq \
+        tqdm \
+        transformers \
+        transformers_stream_generator \
+        unidecode \
+        "uvicorn[standard]" \
+        vocos \
+        wandb \
+        "x_transformers>=1.31.14" \
+    && python -m pip install --no-cache-dir --no-deps -e . \
+    && python platform/workers/check_ml_runtime.py
+
+CMD ["python", "platform/workers/rq_worker.py"]

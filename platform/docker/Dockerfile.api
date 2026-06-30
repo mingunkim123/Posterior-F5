@@ -17,10 +17,12 @@ RUN apt-get update \
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY platform/backend ./platform/backend
+COPY platform/config ./platform/config
+COPY platform/samples ./platform/samples
 COPY platform/workers ./platform/workers
 
 RUN python -m pip install --upgrade pip \
-    && python -m pip install --no-cache-dir fastapi "uvicorn[standard]" \
+    && python -m pip install --no-cache-dir fastapi "uvicorn[standard]" redis rq \
     && python -m pip install --no-cache-dir --no-deps -e .
 
 EXPOSE 8000

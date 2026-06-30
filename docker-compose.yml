@@ -8,6 +8,8 @@ services:
       - "8000:8000"
     environment:
       PYTHONUNBUFFERED: "1"
+      MLOPS_QUEUE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
     volumes:
       - ./mlops_artifacts:/app/mlops_artifacts
       - ./data:/app/data:ro
@@ -19,20 +21,58 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+    depends_on:
+      redis:
+        condition: service_started
+
+  redis:
+    image: redis:7-alpine
 
   worker:
     build:
       context: .
-      dockerfile: platform/docker/Dockerfile.api
-    image: posterior-f5-api:local
-    command: ["python", "platform/workers/run_job_worker.py", "--poll_interval", "2"]
+      dockerfile: platform/docker/Dockerfile.worker-gpu
+    image: posterior-f5-worker-gpu:local
+    command: ["python", "platform/workers/rq_worker.py"]
     environment:
       PYTHONUNBUFFERED: "1"
+      MLOPS_QUEUE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      HF_HOME: /root/.cache/huggingface
+      TORCH_HOME: /root/.cache/torch
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+    shm_size: "8gb"
     volumes:
       - ./mlops_artifacts:/app/mlops_artifacts
       - ./data:/app/data:ro
       - ./ckpts:/app/ckpts:ro
       - ./posterior_cache:/app/posterior_cache
+      - hf_cache:/root/.cache/huggingface
+      - torch_cache:/root/.cache/torch
+    depends_on:
+      redis:
+        condition: service_started
+
+  worker-lite:
+    profiles: ["lite"]
+    build:
+      context: .
+      dockerfile: platform/docker/Dockerfile.api
+    image: posterior-f5-api:local
+    command: ["python", "platform/workers/rq_worker.py"]
+    environment:
+      PYTHONUNBUFFERED: "1"
+      MLOPS_QUEUE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./mlops_artifacts:/app/mlops_artifacts
+      - ./data:/app/data:ro
+      - ./ckpts:/app/ckpts:ro
+      - ./posterior_cache:/app/posterior_cache
+    depends_on:
+      redis:
+        condition: service_started
 
   frontend:
     build:
@@ -46,3 +86,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+volumes:
+  hf_cache:
+  torch_cache:

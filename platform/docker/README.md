@@ -6,8 +6,13 @@ putting experiment artifacts inside containers.
 ## Services
 
 - `api`: FastAPI server on `http://127.0.0.1:8000`
-- `worker`: queue consumer that runs `platform/workers/run_posterior_f5_pipeline.py`
+- `worker`: ML-capable queue consumer built from `Dockerfile.worker-gpu`
 - `frontend`: React dashboard on `http://127.0.0.1:5174`
+
+The default worker image includes torch, torchaudio, transformers, vocos,
+soundfile, and the local F5-TTS package so it can run posterior extraction,
+actual inference, ASR prediction, and metrics jobs. It can run on CPU, and will
+use CUDA when Docker exposes NVIDIA devices to the container.
 
 ## Persistent Local Paths
 
@@ -17,6 +22,11 @@ The compose file mounts these host directories into the API container:
 - `./data` for local manifests/audio inputs
 - `./ckpts` for checkpoints
 - `./posterior_cache` for reusable posterior artifacts
+
+The worker also uses named Docker volumes for model caches:
+
+- `hf_cache` mounted at `/root/.cache/huggingface`
+- `torch_cache` mounted at `/root/.cache/torch`
 
 The important output path is:
 
@@ -38,11 +48,29 @@ Then open:
 http://127.0.0.1:5174
 ```
 
+For a fast scaffold-only control-plane smoke test without the ML dependency
+image, run the lightweight worker profile instead:
+
+```bash
+docker compose up --build api frontend
+docker compose --profile lite up --build worker-lite
+```
+
+To check the ML worker runtime after building:
+
+```bash
+docker compose run --rm worker python platform/workers/check_ml_runtime.py
+```
+
+On an NVIDIA GPU host, use the GPU override so Compose requests device access:
+
+```bash
+docker compose -f docker-compose.yml -f platform/docker/docker-compose.gpu.yml up --build
+```
+
 ## Notes
 
 The API image is intentionally lightweight. It installs the local package
-without the full ML dependency stack, so dashboard browsing and dry-run pipeline
-commands stay quick. The local worker currently uses the same image as the API
-and consumes file-backed jobs from `mlops_artifacts/runs/*/job.json`. Full GPU
-training or inference should later move to a heavier worker image with the
-required CUDA/model dependencies.
+without the full ML dependency stack, so dashboard browsing stays quick. The
+default worker is now separated into a heavier ML runtime image and consumes
+file-backed jobs from `mlops_artifacts/runs/*/job.json`.

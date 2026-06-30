@@ -16,11 +16,13 @@ if str(BACKEND_APP) not in sys.path:
     sys.path.insert(0, str(BACKEND_APP))
 
 from run_store import (  # noqa: E402
+    append_event,
     default_artifact_root,
     job_path,
     list_queued_jobs,
     load_run_job,
     read_json,
+    read_text_tail,
     run_path,
     timestamp,
     write_json,
@@ -47,7 +49,19 @@ def mark_failed(job_file: Path, job: dict[str, Any], message: str, *, exit_code:
     job["finished_at"] = timestamp()
     job["error_message"] = message
     write_json(job_file, job)
+    append_event(str(job.get("run_id")), level="error", stage="job", message=message, artifact_root=job_file.parent.parent)
     return job
+
+
+def mark_running_stages_failed(run: dict[str, Any]) -> None:
+    for stage in run.get("stages", []):
+        if stage.get("status") == "running":
+            stage["status"] = "failed"
+
+
+def failure_message(stderr_path: Path, exit_code: int) -> str:
+    stderr = read_text_tail(stderr_path, 4000).strip()
+    return stderr or f"Job exited with code {exit_code}"
 
 
 def run_job(run_id: str, *, artifact_root: Path) -> dict[str, Any]:
@@ -69,6 +83,7 @@ def run_job(run_id: str, *, artifact_root: Path) -> dict[str, Any]:
     job["status"] = "running"
     job["started_at"] = timestamp()
     write_json(job_file, job)
+    append_event(run_id, level="info", stage="job", message="started", artifact_root=artifact_root)
 
     with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open("w", encoding="utf-8") as stderr_file:
         try:
@@ -90,13 +105,28 @@ def run_job(run_id: str, *, artifact_root: Path) -> dict[str, Any]:
     job["exit_code"] = exit_code
     job["finished_at"] = timestamp()
     job["status"] = "succeeded" if exit_code == 0 else "failed"
+    if exit_code != 0:
+        job["error_message"] = failure_message(stderr_path, exit_code)
+        append_event(run_id, level="error", stage="job", message=job["error_message"], artifact_root=artifact_root)
+    else:
+        append_event(run_id, level="info", stage="job", message="completed", artifact_root=artifact_root)
 
     run_json = run_root / "run.json"
     if run_json.exists():
         try:
             run = read_json(run_json)
-            job["run"] = run
-            job["status"] = run.get("status", job["status"])
+            if exit_code != 0:
+                if run.get("status") in {"queued", "submitted", "running"}:
+                    run["status"] = "failed"
+                    run["updated_at"] = timestamp()
+                    run["error_message"] = job["error_message"]
+                    mark_running_stages_failed(run)
+                    write_json(run_json, run)
+                job["run"] = run
+                job["status"] = "failed"
+            else:
+                job["run"] = run
+                job["status"] = run.get("status", job["status"])
         except ValueError:
             job["status"] = "failed"
             job["error_message"] = "run.json is not valid JSON"

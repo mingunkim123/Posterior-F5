@@ -1,0 +1,18 @@
+datasets:
+  dev_smoke:
+    manifest: platform/samples/manifests/dev_smoke.jsonl
+    language: en
+    num_utterances: 1
+    purpose: smoke test
+    subsets:
+      - smoke
+    notes: Lightweight dashboard and worker E2E sample.
+
+  metrics_smoke:
+    manifest: platform/samples/manifests/dev_smoke.jsonl
+    language: en
+    num_utterances: 1
+    purpose: metrics and paper export smoke
+    subsets:
+      - smoke
+    notes: Uses the same sample manifest with all baseline modes enabled.
