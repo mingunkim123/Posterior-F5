@@ -199,6 +199,50 @@ PYTHONPATH=src .venv/bin/python platform/workers/run_posterior_f5_pipeline.py \
 5. subset별 paired bootstrap으로 유의성을 확인한다.
 6. 실패 case를 deletion, repetition, ASR entropy 기준으로 분해한다.
 
+full run template:
+
+```bash
+PYTHONPATH=src .venv/bin/python platform/workers/run_posterior_f5_pipeline.py \
+  --run_id stage1_full_<subset> \
+  --manifest manifests/<subset>.jsonl \
+  --mode hard \
+  --mode oracle \
+  --mode length_only \
+  --mode soft_ctc \
+  --checkpoint_id f5tts_v1_base_hf \
+  --run_posterior_extraction \
+  --ctc_model facebook/wav2vec2-base-960h \
+  --run_inference \
+  --run_prediction \
+  --run_metrics \
+  --asr_device cuda:0 \
+  --infer_device cuda \
+  --eval_device cuda:0 \
+  --fail_if_exists
+```
+
+paper table:
+
+```bash
+PYTHONPATH=src .venv/bin/python src/f5_tts/eval/make_result_tables.py \
+  --summary mlops_artifacts/runs/<run_id>/metrics/summary.json \
+  --output_csv results/tables/<run_id>_main.csv \
+  --output_md results/tables/<run_id>_main.md
+```
+
+bootstrap:
+
+```bash
+PYTHONPATH=src .venv/bin/python src/f5_tts/eval/bootstrap_significance.py \
+  --per_utterance mlops_artifacts/runs/<run_id>/metrics/per_utterance.jsonl \
+  --baseline hard \
+  --candidate soft_ctc \
+  --metric wer \
+  --samples 10000 \
+  --seed 1234 \
+  --output results/tables/<run_id>_hard_vs_soft_ctc_wer.bootstrap.json
+```
+
 ### Stage 2 확장
 
 Stage 1 결과를 freeze한 뒤 진행한다.
@@ -206,3 +250,49 @@ Stage 1 결과를 freeze한 뒤 진행한다.
 1. `posterior_encoder` training loop와 inference mode를 연결한다.
 2. real SSL reference cache를 만들고 `hybrid`가 soft text와 SSL branch를 실제로 mix하게 한다.
 3. `soft_ctc` vs `posterior_encoder`, `soft_ctc` vs `hybrid` ablation을 같은 manifest와 seed로 추가 실행한다.
+
+posterior encoder smoke:
+
+```bash
+PYTHONPATH=src .venv/bin/python src/f5_tts/train/train_posterior.py \
+  --synthetic_smoke \
+  --output_dir /tmp/posterior_encoder_synthetic_smoke \
+  --max_steps 20
+```
+
+SSL cache extraction:
+
+```bash
+PYTHONPATH=src .venv/bin/python src/f5_tts/scripts/extract_ssl_reference.py \
+  --manifest manifests/<subset>.jsonl \
+  --output ssl_cache/<subset>.ssl.jsonl \
+  --shard_dir ssl_cache/<subset>_npz \
+  --model microsoft/wavlm-base-plus \
+  --device cuda:0
+```
+
+Stage 2 run template:
+
+```bash
+PYTHONPATH=src .venv/bin/python platform/workers/run_posterior_f5_pipeline.py \
+  --run_id stage2_full_<subset> \
+  --manifest manifests/<subset>.jsonl \
+  --mode posterior_encoder \
+  --mode hybrid \
+  --checkpoint_id f5tts_v1_base_hf \
+  --posterior_encoder_ckpt ckpts/posterior_encoder/dev_latest/model_last.pt \
+  --ssl_cache ssl_cache/<subset>.ssl.jsonl \
+  --run_posterior_extraction \
+  --ctc_model facebook/wav2vec2-base-960h \
+  --run_inference \
+  --run_prediction \
+  --run_metrics \
+  --asr_device cuda:0 \
+  --infer_device cuda \
+  --eval_device cuda:0 \
+  --fail_if_exists
+```
+
+## Freeze Checklist
+
+논문 table에 들어가는 run은 [reproducibility_checklist.md](reproducibility_checklist.md)를 채운 뒤 freeze한다.

@@ -799,6 +799,8 @@ def build_pipeline_command(payload: dict[str, Any], *, artifact_root: Path | Non
         "vocoder": "--vocoder",
         "seed": "--seed",
         "language": "--language",
+        "posterior_encoder_ckpt": "--posterior_encoder_ckpt",
+        "ssl_cache": "--ssl_cache",
     }
     for key, flag in scalar_options.items():
         value = payload.get(key)

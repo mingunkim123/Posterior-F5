@@ -920,3 +920,12 @@ Stage 1까지 끝나면 `posterior_encoder`나 `hybrid`가 없어도 최소 논�
 | Step 118 | 없음 | 논문 main claim에 들어갈 최소 결과를 고정한다. | final table과 run id 기록 |
 
 Step 99까지 완료되면 최소 논문 실험은 실제로 돌릴 수 있다. Step 118까지 완료되면 “실험 가능”을 넘어 main table과 ablation table을 재현 가능한 run id로 고정한 상태가 된다. 이후는 아이디어 구현보다 비교군 보강, human evaluation, reviewer 질문 대응용 ablation을 추가하는 단계다.
+
+진행 기록:
+
+- Step 113: `docs/md/reproducibility_checklist.md`를 추가해 commit, dataset, posterior cache, checkpoint, seed, GPU, eval ASR, table 산출물을 기록할 양식을 만들었다.
+- Step 114: `docs/md/experiment_protocol.md`에 Stage 1 full run, table generation, bootstrap, Stage 2 posterior encoder/hybrid run template을 최종 파일명 기준으로 갱신했다.
+- Step 115: Stage 1/Stage 2 freeze는 실제 full run artifact가 필요하므로 runbook 기준으로 남겼다.
+- Step 116: main/ablation/appendix table 생성 경로는 `make_result_tables.py`와 `bootstrap_significance.py`로 고정했다.
+- Step 117: 각 알파벳 섹션마다 전체 pytest를 실행하고 커밋했다.
+- Step 118: 현재는 dev-small dry-run contract가 고정된 상태다. 논문 main claim은 full real-run 후 `reproducibility_checklist.md`에 run id와 table path를 채워 고정한다.
