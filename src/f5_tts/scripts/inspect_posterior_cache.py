@@ -5,12 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import sys
 from pathlib import Path
 from typing import Any
-
-
-sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from f5_tts.posterior.io import iter_posterior_manifest, load_topk_arrays, resolve_shard_path
 

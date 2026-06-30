@@ -21,13 +21,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_jsonl(path: str | Path) -> list[dict]:
-    rows = []
     with Path(path).open("r", encoding="utf-8") as file:
-        for line in file:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+        return [json.loads(line) for line in file if line.strip()]
 
 
 def paired_differences(rows: list[dict], *, baseline: str, candidate: str, metric: str) -> list[float]:

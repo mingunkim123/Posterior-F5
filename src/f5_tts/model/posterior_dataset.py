@@ -14,7 +14,12 @@ from f5_tts.posterior.io import index_posterior_manifest, load_topk_arrays
 class PosteriorCacheDataset(Dataset):
     """Wrap an existing dataset and attach posterior arrays by audio path or utterance id."""
 
-    def __init__(self, base_dataset: Dataset, posterior_manifest: str | Path, vocab_char_map: dict[str, int] | None = None):
+    def __init__(
+        self,
+        base_dataset: Dataset,
+        posterior_manifest: str | Path,
+        vocab_char_map: dict[str, int] | None = None,
+    ):
         self.base_dataset = base_dataset
         self.posterior_manifest = Path(posterior_manifest)
         self.posterior_index = index_posterior_manifest(self.posterior_manifest)
@@ -44,8 +49,10 @@ class PosteriorCacheDataset(Dataset):
         item["posterior_utterance"] = posterior
         item["expected_ref_len"] = posterior.expected_ref_len
         item["posterior_mean_entropy"] = posterior.mean_entropy
-        text = item.get("text") or posterior.one_best or ""
-        item.setdefault("oracle_text_tensor", self._text_to_tensor(text, item))
+
+        if "oracle_text_tensor" not in item:
+            text = item.get("text") or posterior.one_best or ""
+            item["oracle_text_tensor"] = self._text_to_tensor(text, item)
 
         if posterior.frame_posteriors is not None:
             token_ids, probs = load_topk_arrays(posterior.frame_posteriors, base_dir=self.posterior_base_dir)
@@ -53,6 +60,7 @@ class PosteriorCacheDataset(Dataset):
             item["posterior_probs"] = torch.tensor(probs, dtype=torch.float32)
             item["seq_len"] = item["posterior_token_ids"].shape[0]
             item["posterior_mask"] = torch.ones(item["seq_len"], dtype=torch.bool)
+
             blank_id = posterior.frame_posteriors.blank_id
             if blank_id is None and posterior.token_map is not None:
                 blank_id = posterior.token_map.blank_id
@@ -64,12 +72,11 @@ class PosteriorCacheDataset(Dataset):
         return item
 
     def _text_to_tensor(self, text: str, item: dict[str, Any]) -> torch.Tensor:
-        if torch.is_tensor(item.get("oracle_text_tensor")):
-            return item["oracle_text_tensor"].long()
-        if torch.is_tensor(item.get("text_token_ids")):
-            return item["text_token_ids"].long()
-        if isinstance(item.get("text_token_ids"), list):
-            return torch.tensor(item["text_token_ids"], dtype=torch.long)
+        text_ids = item.get("text_token_ids")
+        if torch.is_tensor(text_ids):
+            return text_ids.long()
+        if isinstance(text_ids, list):
+            return torch.tensor(text_ids, dtype=torch.long)
         if self.vocab_char_map is not None:
             return torch.tensor([self.vocab_char_map.get(char, 0) for char in str(text)], dtype=torch.long)
         return torch.tensor([ord(char) for char in str(text)], dtype=torch.long)

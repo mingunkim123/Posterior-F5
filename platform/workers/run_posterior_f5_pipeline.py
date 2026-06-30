@@ -353,37 +353,21 @@ def prepared_manifest_rows(
     return rows
 
 
-def yaml_scalar(value: Any) -> str:
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    text = str(value)
-    escaped = text.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{escaped}"'
-
-
 def write_simple_yaml(path: Path, data: dict[str, Any]) -> None:
-    """Write the small config snapshot without adding a PyYAML dependency."""
+    """Write the run config snapshot as YAML for human inspection."""
 
-    def lines_for_mapping(mapping: dict[str, Any], indent: int = 0) -> list[str]:
-        lines: list[str] = []
-        prefix = " " * indent
-        for key, value in mapping.items():
-            if isinstance(value, dict):
-                lines.append(f"{prefix}{key}:")
-                lines.extend(lines_for_mapping(value, indent + 2))
-            elif isinstance(value, list):
-                lines.append(f"{prefix}{key}:")
-                for item in value:
-                    lines.append(f"{prefix}  - {yaml_scalar(item)}")
-            else:
-                lines.append(f"{prefix}{key}: {yaml_scalar(value)}")
-        return lines
+    import yaml
 
-    path.write_text("\n".join(lines_for_mapping(data)) + "\n", encoding="utf-8")
+    path.write_text(yaml.safe_dump(data, sort_keys=False, default_flow_style=False), encoding="utf-8")
+
+
+def _subprocess_env(repo_root: Path) -> dict[str, str]:
+    """Build a subprocess environment that exposes ``src/`` on ``PYTHONPATH``."""
+
+    env = os.environ.copy()
+    src_path = str(repo_root / "src")
+    env["PYTHONPATH"] = src_path if not env.get("PYTHONPATH") else f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
+    return env
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
@@ -588,10 +572,7 @@ def run_posterior_extraction_stage(
     if args.asr_device:
         command.extend(["--device", args.asr_device])
 
-    env = os.environ.copy()
-    src_path = str(repo_root / "src")
-    env["PYTHONPATH"] = src_path if not env.get("PYTHONPATH") else f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
-    completed = subprocess.run(command, cwd=repo_root, check=False, capture_output=True, text=True, env=env)
+    completed = subprocess.run(command, cwd=repo_root, check=False, capture_output=True, text=True, env=_subprocess_env(repo_root))
     log_path.write_text(
         "\n".join(
             [
@@ -736,9 +717,7 @@ def run_inference_stage(
             "Run with --run_posterior_extraction first."
         )
 
-    env = os.environ.copy()
-    src_path = str(repo_root / "src")
-    env["PYTHONPATH"] = src_path if not env.get("PYTHONPATH") else f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
+    env = _subprocess_env(repo_root)
 
     mode_summaries: list[dict[str, Any]] = []
     overall_status = "succeeded"
@@ -1037,9 +1016,7 @@ def run_metrics_stage(
     modes = args.modes or DEFAULT_MODES
     manifest_path = run_root / manifest_name
     posterior_file = run_root / "posterior_cache" / "run.posterior.jsonl"
-    env = os.environ.copy()
-    src_path = str(repo_root / "src")
-    env["PYTHONPATH"] = src_path if not env.get("PYTHONPATH") else f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
+    env = _subprocess_env(repo_root)
 
     metrics_by_mode: list[dict[str, Any]] = []
     mode_summaries: list[dict[str, Any]] = []
@@ -1170,6 +1147,37 @@ def run_metrics_stage(
     }
 
 
+def _execute_stage(
+    *,
+    name: str,
+    runner,
+    runner_kwargs: dict[str, Any],
+    running_payload: dict[str, Any],
+    stages: list[dict[str, Any]],
+    write_payload,
+    run_root: Path,
+    failure_message: str,
+    fail_status: str = "failed",
+) -> list[dict[str, Any]]:
+    """Append-event + write-running-payload + run + handle failure for one stage."""
+
+    append_event(run_root, level="info", stage=name, message="started")
+    write_payload(status="running", stages=[*stages, running_payload])
+    stage_payload = runner(**runner_kwargs)
+    stages = [*stages, stage_payload]
+
+    if stage_payload["status"] == fail_status or (name == "posterior_extraction" and stage_payload["status"] != "succeeded"):
+        message = stage_payload.get("error_message") or failure_message
+        append_event(run_root, level="error", stage=name, message=stage_payload.get("error_message") or "failed")
+        write_payload(status="failed", stages=stages, error_message=stage_payload.get("error_message") or failure_message)
+        if name == "posterior_extraction":
+            raise RuntimeError(f"Posterior extraction failed; see {run_root / stage_payload['log']}")
+        raise RuntimeError(failure_message)
+
+    append_event(run_root, level="info", stage=name, message=stage_payload["status"])
+    return stages
+
+
 def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> Path:
     repo_root = repo_root or repository_root()
     modes = args.modes or DEFAULT_MODES
@@ -1186,6 +1194,20 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
     now = utc_or_local_now().isoformat(timespec="seconds")
     manifest_name = snapshot_manifest(args.manifest, run_root)
     git = git_snapshot(repo_root)
+
+    def write_payload(*, status: str, stages: list[dict[str, Any]], error_message: str | None = None) -> None:
+        write_run_payload(
+            args=args,
+            run_id=run_id,
+            run_root=run_root,
+            manifest_name=manifest_name,
+            status=status,
+            created_at=now,
+            git=git,
+            stages=stages,
+            error_message=error_message,
+        )
+
     scaffold_stage = {
         "name": "scaffold",
         "status": "succeeded",
@@ -1202,193 +1224,60 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
     }
     stages = [scaffold_stage]
     append_event(run_root, level="info", stage="scaffold", message="succeeded")
-    write_run_payload(
-        args=args,
-        run_id=run_id,
-        run_root=run_root,
-        manifest_name=manifest_name,
-        status="running",
-        created_at=now,
-        git=git,
-        stages=stages,
-    )
+    write_payload(status="running", stages=stages)
 
-    if args.run_posterior_extraction:
-        append_event(run_root, level="info", stage="posterior_extraction", message="started")
-        running_posterior_stage = {
-            "name": "posterior_extraction",
-            "status": "running",
-            "outputs": ["posterior_cache/run.posterior.jsonl", "posterior_cache/posterior_npz/"],
-        }
-        write_run_payload(
-            args=args,
-            run_id=run_id,
-            run_root=run_root,
-            manifest_name=manifest_name,
-            status="running",
-            created_at=now,
-            git=git,
-            stages=[scaffold_stage, running_posterior_stage],
-        )
-        posterior_stage = run_posterior_extraction_stage(
-            args=args,
-            repo_root=repo_root,
-            run_root=run_root,
-            manifest_name=manifest_name,
-            source_manifest=source_manifest,
-        )
-        stages = [scaffold_stage, posterior_stage]
-        if posterior_stage["status"] != "succeeded":
-            append_event(run_root, level="error", stage="posterior_extraction", message=posterior_stage.get("error_message") or "failed")
-            write_run_payload(
-                args=args,
-                run_id=run_id,
-                run_root=run_root,
-                manifest_name=manifest_name,
-                status="failed",
-                created_at=now,
-                git=git,
-                stages=stages,
-                error_message=posterior_stage.get("error_message"),
-            )
-            raise RuntimeError(f"Posterior extraction failed; see {run_root / posterior_stage['log']}")
-        append_event(run_root, level="info", stage="posterior_extraction", message="succeeded")
+    base_kwargs = {"args": args, "repo_root": repo_root, "run_root": run_root, "manifest_name": manifest_name}
+    stage_specs = [
+        (
+            args.run_posterior_extraction,
+            "posterior_extraction",
+            run_posterior_extraction_stage,
+            {**base_kwargs, "source_manifest": source_manifest},
+            {"outputs": ["posterior_cache/run.posterior.jsonl", "posterior_cache/posterior_npz/"]},
+            "Posterior extraction failed",
+        ),
+        (
+            args.run_inference,
+            "inference",
+            run_inference_stage,
+            {**base_kwargs, "source_manifest": source_manifest},
+            {"outputs": ["generated/<mode>/<utterance_id>.wav", "generated/<mode>/commands.jsonl"], "dry_run": args.inference_dry_run},
+            "Inference failed; inspect logs/inference_<mode>.log",
+        ),
+        (
+            args.run_prediction,
+            "prediction",
+            run_prediction_stage,
+            {**base_kwargs, "source_manifest": source_manifest},
+            {"outputs": ["predictions/<mode>.jsonl"], "dry_run": args.prediction_dry_run},
+            "Prediction failed; inspect logs/prediction_<mode>.log",
+        ),
+        (
+            args.run_metrics,
+            "metrics",
+            run_metrics_stage,
+            base_kwargs,
+            {"outputs": ["metrics/<mode>.metrics.json", "metrics/summary.json", "metrics/summary.csv"], "dry_run": args.metrics_dry_run},
+            "Metrics failed; inspect logs/metrics_<mode>.log",
+        ),
+    ]
 
-    if args.run_inference:
-        append_event(run_root, level="info", stage="inference", message="started")
-        running_inference_stage = {
-            "name": "inference",
-            "status": "running",
-            "dry_run": args.inference_dry_run,
-            "outputs": ["generated/<mode>/<utterance_id>.wav", "generated/<mode>/commands.jsonl"],
-        }
-        write_run_payload(
-            args=args,
-            run_id=run_id,
+    for gate, name, runner, runner_kwargs, running_extras, failure_message in stage_specs:
+        if not gate:
+            continue
+        running_payload = {"name": name, "status": "running", **running_extras}
+        stages = _execute_stage(
+            name=name,
+            runner=runner,
+            runner_kwargs=runner_kwargs,
+            running_payload=running_payload,
+            stages=stages,
+            write_payload=write_payload,
             run_root=run_root,
-            manifest_name=manifest_name,
-            status="running",
-            created_at=now,
-            git=git,
-            stages=[*stages, running_inference_stage],
+            failure_message=failure_message,
         )
-        inference_stage = run_inference_stage(
-            args=args,
-            repo_root=repo_root,
-            run_root=run_root,
-            manifest_name=manifest_name,
-            source_manifest=source_manifest,
-        )
-        stages = [*stages, inference_stage]
-        if inference_stage["status"] == "failed":
-            append_event(run_root, level="error", stage="inference", message="failed")
-            write_run_payload(
-                args=args,
-                run_id=run_id,
-                run_root=run_root,
-                manifest_name=manifest_name,
-                status="failed",
-                created_at=now,
-                git=git,
-                stages=stages,
-                error_message="Inference failed; inspect logs/inference_<mode>.log",
-            )
-            raise RuntimeError("Inference failed; inspect logs/inference_<mode>.log")
-        append_event(run_root, level="info", stage="inference", message=inference_stage["status"])
 
-    if args.run_prediction:
-        append_event(run_root, level="info", stage="prediction", message="started")
-        running_prediction_stage = {
-            "name": "prediction",
-            "status": "running",
-            "dry_run": args.prediction_dry_run,
-            "outputs": ["predictions/<mode>.jsonl"],
-        }
-        write_run_payload(
-            args=args,
-            run_id=run_id,
-            run_root=run_root,
-            manifest_name=manifest_name,
-            status="running",
-            created_at=now,
-            git=git,
-            stages=[*stages, running_prediction_stage],
-        )
-        prediction_stage = run_prediction_stage(
-            args=args,
-            repo_root=repo_root,
-            run_root=run_root,
-            manifest_name=manifest_name,
-            source_manifest=source_manifest,
-        )
-        stages = [*stages, prediction_stage]
-        if prediction_stage["status"] == "failed":
-            append_event(run_root, level="error", stage="prediction", message="failed")
-            write_run_payload(
-                args=args,
-                run_id=run_id,
-                run_root=run_root,
-                manifest_name=manifest_name,
-                status="failed",
-                created_at=now,
-                git=git,
-                stages=stages,
-                error_message="Prediction failed; inspect logs/prediction_<mode>.log",
-            )
-            raise RuntimeError("Prediction failed; inspect logs/prediction_<mode>.log")
-        append_event(run_root, level="info", stage="prediction", message=prediction_stage["status"])
-
-    if args.run_metrics:
-        append_event(run_root, level="info", stage="metrics", message="started")
-        running_metrics_stage = {
-            "name": "metrics",
-            "status": "running",
-            "dry_run": args.metrics_dry_run,
-            "outputs": ["metrics/<mode>.metrics.json", "metrics/summary.json", "metrics/summary.csv"],
-        }
-        write_run_payload(
-            args=args,
-            run_id=run_id,
-            run_root=run_root,
-            manifest_name=manifest_name,
-            status="running",
-            created_at=now,
-            git=git,
-            stages=[*stages, running_metrics_stage],
-        )
-        metrics_stage = run_metrics_stage(
-            args=args,
-            repo_root=repo_root,
-            run_root=run_root,
-            manifest_name=manifest_name,
-        )
-        stages = [*stages, metrics_stage]
-        if metrics_stage["status"] == "failed":
-            append_event(run_root, level="error", stage="metrics", message="failed")
-            write_run_payload(
-                args=args,
-                run_id=run_id,
-                run_root=run_root,
-                manifest_name=manifest_name,
-                status="failed",
-                created_at=now,
-                git=git,
-                stages=stages,
-                error_message="Metrics failed; inspect logs/metrics_<mode>.log",
-            )
-            raise RuntimeError("Metrics failed; inspect logs/metrics_<mode>.log")
-        append_event(run_root, level="info", stage="metrics", message=metrics_stage["status"])
-
-    write_run_payload(
-        args=args,
-        run_id=run_id,
-        run_root=run_root,
-        manifest_name=manifest_name,
-        status="completed",
-        created_at=now,
-        git=git,
-        stages=stages,
-    )
+    write_payload(status="completed", stages=stages)
     append_event(run_root, level="info", stage="run", message="completed")
     return run_root
 

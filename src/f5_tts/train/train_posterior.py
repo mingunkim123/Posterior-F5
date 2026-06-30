@@ -5,6 +5,16 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import torch
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+
+from f5_tts.model.posterior_encoder import (
+    TopKPosteriorEncoder,
+    distillation_loss,
+    save_posterior_encoder_checkpoint,
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Posterior encoder distillation trainer.")
@@ -24,10 +34,10 @@ def load_config(path: str | Path):
     return OmegaConf.load(path)
 
 
-def oracle_text_embedding(f5_model, text_tensor, seq_len, *, drop_text=False):
+def oracle_text_embedding(f5_model, text_tensor, seq_len, *, drop_text: bool = False) -> torch.Tensor:
     """Return the frozen F5 oracle text embedding used as distillation target."""
 
-    with __import__("torch").inference_mode():
+    with torch.inference_mode():
         return f5_model.transformer.text_embed(text_tensor, seq_len=seq_len, drop_text=drop_text).detach()
 
 
@@ -35,14 +45,12 @@ def posterior_distillation_step(posterior_encoder, f5_model, batch, optimizer=No
     """Run one posterior encoder distillation step.
 
     Expected batch keys:
-    - `posterior_token_ids`: [batch, seq_len, top_k]
-    - `posterior_probs`: [batch, seq_len, top_k]
-    - `oracle_text_tensor`: F5 token tensor
-    - `seq_len`: target conditioning length
-    - optional `posterior_mask`
+    - ``posterior_token_ids`` (B, T, K)
+    - ``posterior_probs`` (B, T, K)
+    - ``oracle_text_tensor`` (B, T)
+    - ``seq_len`` int
+    - optional ``posterior_mask``, ``entropy``, ``blank_prob``
     """
-
-    from f5_tts.model.posterior_encoder import distillation_loss
 
     posterior_hidden = posterior_encoder(
         batch["posterior_token_ids"],
@@ -62,13 +70,8 @@ def posterior_distillation_step(posterior_encoder, f5_model, batch, optimizer=No
     return loss
 
 
-def move_batch_to_device(batch, device):
-    import torch
-
-    moved = {}
-    for key, value in batch.items():
-        moved[key] = value.to(device) if torch.is_tensor(value) else value
-    return moved
+def _move_to(batch: dict, device) -> dict:
+    return {key: value.to(device) if torch.is_tensor(value) else value for key, value in batch.items()}
 
 
 def train_posterior_encoder(
@@ -85,27 +88,24 @@ def train_posterior_encoder(
 ) -> dict:
     """Run a checkpointable posterior encoder distillation loop."""
 
-    import torch
-
-    from f5_tts.model.posterior_encoder import save_posterior_encoder_checkpoint
-
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     device = device or next(posterior_encoder.parameters()).device
     posterior_encoder.train()
+
     losses: list[float] = []
     step = 0
-
     while step < max_steps:
         for batch in dataloader:
             step += 1
-            batch = move_batch_to_device(batch, device)
-            loss = posterior_distillation_step(posterior_encoder, f5_model, batch, optimizer=optimizer)
+            loss = posterior_distillation_step(posterior_encoder, f5_model, _move_to(batch, device), optimizer=optimizer)
             losses.append(float(loss.detach().cpu()))
             if log_every and step % log_every == 0:
                 print(f"step={step} loss={losses[-1]:.6f}")
             if save_every and step % save_every == 0:
-                save_posterior_encoder_checkpoint(output_path / f"model_{step}.pt", posterior_encoder, optimizer=optimizer, step=step)
+                save_posterior_encoder_checkpoint(
+                    output_path / f"model_{step}.pt", posterior_encoder, optimizer=optimizer, step=step
+                )
             if step >= max_steps:
                 break
 
@@ -118,30 +118,28 @@ def train_posterior_encoder(
     }
 
 
+class _SyntheticTextEmbedding(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.text_embed = nn.Embedding(8, 4)
+
+    def forward(self, text_tensor: torch.Tensor, seq_len: int, drop_text: bool = False) -> torch.Tensor:
+        del drop_text
+        hidden = self.text_embed(text_tensor[:, :seq_len])
+        if hidden.shape[1] < seq_len:
+            hidden = nn.functional.pad(hidden, (0, 0, 0, seq_len - hidden.shape[1]))
+        return hidden
+
+
+class _SyntheticF5(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.transformer = nn.Module()
+        self.transformer.text_embed = _SyntheticTextEmbedding()
+
+
 def run_synthetic_smoke(output_dir: str | Path, *, max_steps: int = 20) -> dict:
-    import torch
-    from torch import nn
-    from torch.utils.data import DataLoader, TensorDataset
-
-    from f5_tts.model.posterior_encoder import TopKPosteriorEncoder
-
-    class _TextEmbedding(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.text_embed = nn.Embedding(8, 4)
-
-        def forward(self, text_tensor, seq_len, drop_text=False):
-            del drop_text
-            hidden = self.text_embed(text_tensor[:, :seq_len])
-            if hidden.shape[1] < seq_len:
-                hidden = torch.nn.functional.pad(hidden, (0, 0, 0, seq_len - hidden.shape[1]))
-            return hidden
-
-    class _F5(nn.Module):
-        def __init__(self):
-            super().__init__()
-            self.transformer = nn.Module()
-            self.transformer.text_embed = _TextEmbedding()
+    """Tiny synthetic distillation loop used to validate the training contract."""
 
     token_ids = torch.tensor([[[1, 0], [2, 0], [3, 0]]], dtype=torch.long).repeat(4, 1, 1)
     probs = torch.tensor([[[0.9, 0.1], [0.8, 0.2], [0.7, 0.3]]], dtype=torch.float32).repeat(4, 1, 1)
@@ -162,12 +160,11 @@ def run_synthetic_smoke(output_dir: str | Path, *, max_steps: int = 20) -> dict:
         }
 
     encoder = TopKPosteriorEncoder(vocab_size=8, text_dim=4, hidden_dim=8, num_layers=1, blank_id=0)
-    f5_model = _F5()
     optimizer = torch.optim.Adam(encoder.parameters(), lr=1e-2)
     dataloader = DataLoader(dataset, batch_size=2, shuffle=False, collate_fn=_collate)
     return train_posterior_encoder(
         posterior_encoder=encoder,
-        f5_model=f5_model,
+        f5_model=_SyntheticF5(),
         dataloader=dataloader,
         optimizer=optimizer,
         max_steps=max_steps,

@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
-
-
-sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from f5_tts.posterior.length import expected_text_len
 from f5_tts.posterior.normalize import entropy

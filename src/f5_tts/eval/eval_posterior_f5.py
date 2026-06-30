@@ -1,14 +1,15 @@
-"""Evaluate posterior-aware F5-TTS outputs."""
+"""Evaluate posterior-aware F5-TTS outputs.
+
+Per-mode WER/CER and per-utterance breakdown for one prediction JSONL against
+its manifest reference text. See ``make_result_tables`` for paper-style output
+and ``bootstrap_significance`` for paired-bootstrap comparisons.
+"""
 
 from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
-
-
-sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 from f5_tts.eval.error_breakdown import cer_breakdown, wer_breakdown
 
@@ -30,13 +31,8 @@ def parse_args() -> argparse.Namespace:
 
 
 def read_jsonl(path: str | Path) -> list[dict]:
-    rows = []
     with Path(path).open("r", encoding="utf-8") as file:
-        for line in file:
-            line = line.strip()
-            if line:
-                rows.append(json.loads(line))
-    return rows
+        return [json.loads(line) for line in file if line.strip()]
 
 
 def _safe_rate(errors: int, reference_length: int) -> float:

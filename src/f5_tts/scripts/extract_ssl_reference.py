@@ -4,12 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import Any
-
-
-sys.path.append(str(Path(__file__).resolve().parents[2]))
 
 
 def parse_args() -> argparse.Namespace:

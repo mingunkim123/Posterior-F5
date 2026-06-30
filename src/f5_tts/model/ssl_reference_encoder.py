@@ -1,4 +1,15 @@
-"""SSL speech feature projectors for transcript-free reference conditioning."""
+"""SSL speech feature projectors and SSL feature cache I/O.
+
+This module groups:
+
+- ``SSLReferenceProjector`` / ``WavLMReferenceEncoder`` — project SSL frame
+  features into the F5 text-conditioning dimension.
+- Cache helpers (``iter_ssl_cache`` / ``index_ssl_cache`` /
+  ``resolve_ssl_feature_path`` / ``load_ssl_feature_array``) for the JSONL +
+  ``.npz`` cache written by ``scripts/extract_ssl_reference.py``.
+- ``cached_ssl_condition`` — convenience used by the inference path and tests
+  to wrap a cache entry into a projected condition tensor.
+"""
 
 from __future__ import annotations
 
@@ -74,6 +85,11 @@ class WavLMReferenceEncoder(nn.Module):
         return self.projector(outputs.last_hidden_state, target_len=target_len)
 
 
+# ---------------------------------------------------------------------------
+# SSL feature cache I/O
+# ---------------------------------------------------------------------------
+
+
 def iter_ssl_cache(path: str | Path):
     with Path(path).open("r", encoding="utf-8") as file:
         for line in file:
@@ -90,6 +106,7 @@ def resolve_ssl_feature_path(entry: dict, *, base_dir: str | Path | None = None)
     feature_path = Path(entry["feature_path"])
     if feature_path.is_absolute() or base_dir is None:
         return feature_path
+
     resolved = Path(base_dir) / feature_path
     if resolved.exists():
         return resolved
@@ -116,6 +133,13 @@ def cached_ssl_condition(
     base_dir: str | Path | None = None,
     device=None,
 ) -> torch.Tensor:
+    """Wrap one cache entry into a projected condition tensor.
+
+    A fresh ``SSLReferenceProjector`` is constructed with random weights — this
+    is intended for the inference smoke path and shape-only tests, where the
+    projector trained alongside the F5 backbone would normally be injected.
+    """
+
     features = load_ssl_feature_array(entry, base_dir=base_dir).unsqueeze(0)
     if device is not None:
         features = features.to(device)

@@ -30,10 +30,6 @@ import {
   Utterance,
   artifactUrl,
   createRun,
-  demoCompareRows,
-  demoMetrics,
-  demoRuns,
-  demoUtterances,
   experimentExportUrl,
   fetchCheckpoints,
   fetchCompare,
@@ -48,6 +44,14 @@ import {
   postRunAction,
   runExportUrl,
 } from "./api";
+import {
+  demoCompareRows,
+  demoMetrics,
+  demoRuns,
+  demoUtterances,
+  fallbackCheckpoints,
+  fallbackDatasets,
+} from "./demo";
 
 const modeColors: Record<string, string> = {
   hard: "#3d6b99",
@@ -159,28 +163,6 @@ const runPresets: RunPreset[] = [
       run_metrics: true,
       metrics_dry_run: false,
     },
-  },
-];
-
-const fallbackCheckpoints: Checkpoint[] = [
-  {
-    id: "f5tts_v1_base_hf",
-    model: "F5TTS_v1_Base",
-    path: "hf://SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors",
-    vocoder: "vocos",
-    checkpoint_hash: "hf:SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors",
-    notes: "upstream base checkpoint",
-  },
-];
-
-const fallbackDatasets: Dataset[] = [
-  {
-    id: "dev_smoke",
-    manifest: sampleManifest,
-    language: "en",
-    num_utterances: 1,
-    purpose: "smoke test",
-    subsets: ["smoke"],
   },
 ];
 

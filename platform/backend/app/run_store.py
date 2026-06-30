@@ -662,18 +662,6 @@ def remove_flag(command: list[str], flag: str, *, takes_value: bool = False) -> 
     return updated
 
 
-def remove_repeated_flag(command: list[str], flag: str) -> list[str]:
-    updated: list[str] = []
-    index = 0
-    while index < len(command):
-        if command[index] == flag:
-            index += 2
-            continue
-        updated.append(command[index])
-        index += 1
-    return updated
-
-
 def resume_command(command: list[str], run_id: str, *, artifact_root: Path | None = None) -> list[str]:
     root = run_path(run_id, artifact_root=artifact_root)
     updated = list(command)
