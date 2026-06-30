@@ -858,6 +858,14 @@ Step 64까지는 모델 아이디어를 검증할 수 있는 연구 scaffold가 
 
 Stage 1까지 끝나면 `posterior_encoder`나 `hybrid`가 없어도 최소 논문 결과는 나온다. 이때 핵심 비교는 `hard` vs `oracle`로 oracle gap을 보고, `hard` vs `length_only`로 duration 효과를 분리하고, `length_only` vs `soft_ctc`로 representation 효과를 보는 것이다.
 
+진행 기록:
+
+- Step 95: `manifests/dev_small.jsonl`에서 Stage 1 네 모드(`hard`, `oracle`, `length_only`, `soft_ctc`) dry-run pipeline을 실행했다.
+- Step 96: dry-run prediction은 placeholder라 qualitative failure 분석 대상이 아니다. 실제 wav/prediction 생성 후 deletion/repetition/entropy high case를 샘플링해야 한다.
+- Step 97: `docs/md/posterior_f5_paper_experiment_flow.md`에 dev-small Stage 1 freeze 명령, table, real-run 전환 조건을 기록했다.
+- Step 98: full clean/noisy/accented/dysarthric sweep은 실제 dataset manifest와 GPU/ASR 환경이 필요하므로 실행하지 않았다.
+- Step 99: dev-small dry-run 산출물로 `make_result_tables.py`와 `bootstrap_significance.py` path를 검증했다. 논문 수치는 real-run 후 freeze한다.
+
 ### F. Posterior encoder 완성
 
 | Step | 파일 | 작업 | 확인 |

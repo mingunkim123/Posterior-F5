@@ -842,8 +842,70 @@ tmp/smoke/
 | hybrid SSL fallback | 부분 구현 | module은 있으나 inference에서 SSL feature 연결 필요 |
 | posterior encoder module | 구현됨 | shape test와 loss helper 존재 |
 | posterior encoder full training | staged | `train_posterior.py`가 full loop는 아직 `NotImplementedError` |
-| posterior-aware batch runner | 필요 | YAML config는 있으나 mode별 orchestration script 필요 |
-| WER/CER breakdown | 구현됨 | speaker similarity, UTMOS, bootstrap은 별도 runner 필요 |
+| posterior-aware batch runner | 구현됨 | `platform/workers/run_posterior_f5_pipeline.py`가 scaffold, posterior, inference, prediction, metrics를 orchestration |
+| WER/CER breakdown | 구현됨 | per-utterance, subset aggregation, bootstrap, CSV/Markdown table 생성 가능 |
+| speaker similarity / UTMOS | staged | 기존 evaluator는 있으나 Posterior-F5 summary table 입력으로 병합하는 단계가 남음 |
+
+## 13.1 Stage 1 최소 결과 freeze 기록
+
+현재 Stage 1 최소 비교군은 아래 네 가지다.
+
+```text
+hard
+oracle
+length_only
+soft_ctc
+```
+
+dev-small dry-run artifact, metric, table, bootstrap 경로는 아래 명령으로 확인했다.
+
+```bash
+rm -rf /tmp/posterior_f5_stage1_minimum
+
+PYTHONPATH=src .venv/bin/python platform/workers/run_posterior_f5_pipeline.py \
+  --run_id stage1_minimum_dev_small \
+  --artifact_root /tmp/posterior_f5_stage1_minimum \
+  --manifest manifests/dev_small.jsonl \
+  --mode hard \
+  --mode oracle \
+  --mode length_only \
+  --mode soft_ctc \
+  --run_posterior_extraction \
+  --skip_whisper \
+  --run_inference \
+  --inference_dry_run \
+  --run_prediction \
+  --prediction_dry_run \
+  --run_metrics \
+  --fail_if_exists
+
+PYTHONPATH=src .venv/bin/python src/f5_tts/eval/make_result_tables.py \
+  --summary /tmp/posterior_f5_stage1_minimum/stage1_minimum_dev_small/metrics/summary.json \
+  --output_csv /tmp/posterior_f5_stage1_minimum/stage1_minimum_dev_small/metrics/stage1_table.csv \
+  --output_md /tmp/posterior_f5_stage1_minimum/stage1_minimum_dev_small/metrics/stage1_table.md
+
+PYTHONPATH=src .venv/bin/python src/f5_tts/eval/bootstrap_significance.py \
+  --per_utterance /tmp/posterior_f5_stage1_minimum/stage1_minimum_dev_small/metrics/per_utterance.jsonl \
+  --baseline hard \
+  --candidate soft_ctc \
+  --metric wer \
+  --samples 100 \
+  --seed 1234 \
+  --output /tmp/posterior_f5_stage1_minimum/stage1_minimum_dev_small/metrics/hard_vs_soft_ctc.bootstrap.json
+```
+
+dry-run table은 prediction placeholder가 비어 있으므로 논문 수치가 아니다. 목적은 file contract와 metric/table pipeline을 freeze하는 것이다.
+
+```text
+| subset | mode | num_utterances | wer | cer | wer_deletions | wer_insertions | wer_substitutions |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| clean/dev_small | hard | 1 | 1.0000 | 1.0000 | 8 | 0 | 0 |
+| clean/dev_small | oracle | 1 | 1.0000 | 1.0000 | 8 | 0 | 0 |
+| clean/dev_small | length_only | 1 | 1.0000 | 1.0000 | 8 | 0 | 0 |
+| clean/dev_small | soft_ctc | 1 | 1.0000 | 1.0000 | 8 | 0 | 0 |
+```
+
+real Stage 1로 넘어갈 때는 위 명령에서 `--skip_whisper`, `--inference_dry_run`, `--prediction_dry_run`을 제거하고 `--ctc_model`, `--asr_device`, `--infer_device`, `--eval_device`를 실제 GPU 환경에 맞춘다.
 
 ## 14. 논문 그림 추천
 
@@ -899,10 +961,10 @@ flowchart LR
 
 논문까지 가려면 현재 코드에서 다음 순서가 가장 효율적이다.
 
-1. `configs/eval/posterior_f5_baseline.yaml`을 읽어 mode별 `infer_cli.py`를 반복 실행하는 batch runner를 만든다.
-2. generated wav 디렉터리를 evaluation ASR로 transcribe해서 `predictions.jsonl`을 만드는 runner를 만든다.
-3. mode별 `eval_posterior_f5.py`를 호출하고 metrics JSON을 하나의 CSV로 합친다.
-4. `hard`, `oracle`, `length_only`, `soft_ctc`까지 먼저 paper table을 만든다.
+1. dev-small에서 `--inference_dry_run`과 `--prediction_dry_run`을 제거하고 실제 wav/prediction을 만든다.
+2. actual CTC posterior cache를 생성하고 `inspect_posterior_cache.py --require_frame_posteriors`로 통과시킨다.
+3. clean/noisy/accented/dysarthric manifest를 채워 Stage 1 full sweep을 실행한다.
+4. `make_result_tables.py`와 `bootstrap_significance.py`로 main table과 `hard` vs `length_only` vs `soft_ctc` ablation을 freeze한다.
 5. 그 다음 `posterior_encoder` full training loop를 완성한다.
 6. 마지막에 SSL feature를 inference path에 연결해서 진짜 `hybrid`를 평가한다.
 
