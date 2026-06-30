@@ -53,6 +53,10 @@ eval = [
     "zhconv",
     "zhon",
 ]
+platform = [
+    "fastapi",
+    "uvicorn[standard]",
+]
 
 [project.urls]
 Homepage = "https://github.com/SWivid/F5-TTS"

@@ -8,6 +8,7 @@ extraction, inference, evaluation, and aggregation to the same run directory.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import shutil
@@ -86,6 +87,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--eval_device", default=None, help="Evaluation ASR device, e.g. cuda:0, mps, or cpu.")
     parser.add_argument("--eval_torch_dtype", choices=["float16", "float32"], default="float32")
+    parser.add_argument(
+        "--run_metrics",
+        action="store_true",
+        help="Evaluate predictions/<mode>.jsonl into metrics/<mode>.metrics.json and summary files.",
+    )
+    parser.add_argument(
+        "--metrics_dry_run",
+        action="store_true",
+        help="Write planned metric artifacts without executing eval_posterior_f5.py.",
+    )
     parser.add_argument("--language", default="en")
     parser.add_argument("--ctc_top_k", type=int, default=8)
     parser.add_argument(
@@ -380,6 +391,8 @@ def build_run_payload(
             "eval_asr": args.eval_asr,
             "run_prediction": args.run_prediction,
             "prediction_dry_run": args.prediction_dry_run,
+            "run_metrics": args.run_metrics,
+            "metrics_dry_run": args.metrics_dry_run,
         },
         "git": git,
         "stages": stages,
@@ -796,6 +809,178 @@ def run_prediction_stage(
     }
 
 
+def numeric_metric_row(metrics: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": metrics.get("mode"),
+        "num_utterances": metrics.get("num_utterances", 0),
+        "wer": metrics.get("wer"),
+        "cer": metrics.get("cer"),
+        "wer_substitutions": metrics.get("wer_substitutions", 0),
+        "wer_deletions": metrics.get("wer_deletions", 0),
+        "wer_insertions": metrics.get("wer_insertions", 0),
+        "wer_reference_length": metrics.get("wer_reference_length", 0),
+        "cer_substitutions": metrics.get("cer_substitutions", 0),
+        "cer_deletions": metrics.get("cer_deletions", 0),
+        "cer_insertions": metrics.get("cer_insertions", 0),
+        "cer_reference_length": metrics.get("cer_reference_length", 0),
+    }
+
+
+def write_summary_files(run_root: Path, metrics_by_mode: list[dict[str, Any]]) -> None:
+    summary_json = run_root / "metrics" / "summary.json"
+    summary_csv = run_root / "metrics" / "summary.csv"
+    summary_payload = {
+        "modes": metrics_by_mode,
+        "created_at": utc_or_local_now().isoformat(timespec="seconds"),
+    }
+    write_json(summary_json, summary_payload)
+
+    fieldnames = [
+        "mode",
+        "num_utterances",
+        "wer",
+        "cer",
+        "wer_substitutions",
+        "wer_deletions",
+        "wer_insertions",
+        "wer_reference_length",
+        "cer_substitutions",
+        "cer_deletions",
+        "cer_insertions",
+        "cer_reference_length",
+    ]
+    with summary_csv.open("w", encoding="utf-8", newline="") as file:
+        writer = csv.DictWriter(file, fieldnames=fieldnames)
+        writer.writeheader()
+        for metrics in metrics_by_mode:
+            writer.writerow(numeric_metric_row(metrics))
+
+
+def run_metrics_stage(
+    *,
+    args: argparse.Namespace,
+    repo_root: Path,
+    run_root: Path,
+    manifest_name: str | None,
+) -> dict[str, Any]:
+    if manifest_name is None:
+        raise ValueError("A manifest is required for metrics")
+
+    modes = args.modes or DEFAULT_MODES
+    manifest_path = run_root / manifest_name
+    posterior_file = run_root / "posterior_cache" / "run.posterior.jsonl"
+    env = os.environ.copy()
+    src_path = str(repo_root / "src")
+    env["PYTHONPATH"] = src_path if not env.get("PYTHONPATH") else f"{src_path}{os.pathsep}{env['PYTHONPATH']}"
+
+    metrics_by_mode: list[dict[str, Any]] = []
+    mode_summaries: list[dict[str, Any]] = []
+    overall_status = "succeeded"
+    for mode in modes:
+        prediction_path = run_root / "predictions" / f"{mode}.jsonl"
+        output_path = run_root / "metrics" / f"{mode}.metrics.json"
+        log_path = run_root / "logs" / f"metrics_{mode}.log"
+        command = [
+            sys.executable,
+            "src/f5_tts/eval/eval_posterior_f5.py",
+            "--manifest",
+            str(manifest_path),
+            "--predictions",
+            str(prediction_path),
+            "--output",
+            str(output_path),
+            "--mode",
+            mode,
+            "--posterior_file",
+            str(posterior_file) if posterior_file.exists() else "",
+        ]
+
+        if args.metrics_dry_run:
+            metrics = {
+                "mode": mode,
+                "status": "planned",
+                "num_utterances": 0,
+                "wer": None,
+                "cer": None,
+                "posterior_file": str(posterior_file) if posterior_file.exists() else "",
+            }
+            write_json(output_path, metrics)
+            log_path.write_text("$ " + " ".join(command) + "\nDRY_RUN: true\n", encoding="utf-8")
+            mode_status = "planned"
+        else:
+            if not prediction_path.exists():
+                metrics = {
+                    "mode": mode,
+                    "status": "failed",
+                    "error_message": f"Missing predictions: {prediction_path}",
+                    "num_utterances": 0,
+                    "wer": None,
+                    "cer": None,
+                }
+                write_json(output_path, metrics)
+                log_path.write_text(metrics["error_message"], encoding="utf-8")
+                mode_status = "failed"
+                overall_status = "failed"
+            else:
+                completed = subprocess.run(command, cwd=repo_root, check=False, capture_output=True, text=True, env=env)
+                log_path.write_text(
+                    "\n".join(
+                        [
+                            "$ " + " ".join(command),
+                            "",
+                            "STDOUT:",
+                            completed.stdout,
+                            "STDERR:",
+                            completed.stderr,
+                            f"EXIT_CODE: {completed.returncode}",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
+                if completed.returncode == 0:
+                    metrics = json.loads(output_path.read_text(encoding="utf-8"))
+                    metrics["status"] = "succeeded"
+                    write_json(output_path, metrics)
+                    mode_status = "succeeded"
+                else:
+                    metrics = {
+                        "mode": mode,
+                        "status": "failed",
+                        "error_message": completed.stderr.strip() or completed.stdout.strip(),
+                        "num_utterances": 0,
+                        "wer": None,
+                        "cer": None,
+                    }
+                    write_json(output_path, metrics)
+                    mode_status = "failed"
+                    overall_status = "failed"
+
+        metrics_by_mode.append(metrics)
+        mode_summaries.append(
+            {
+                "mode": mode,
+                "status": mode_status,
+                "metrics": str(output_path.relative_to(run_root)),
+                "log": str(log_path.relative_to(run_root)),
+            }
+        )
+        if overall_status == "failed":
+            break
+
+    write_summary_files(run_root, metrics_by_mode)
+    if args.metrics_dry_run and overall_status == "succeeded":
+        stage_status = "planned"
+    else:
+        stage_status = overall_status
+    return {
+        "name": "metrics",
+        "status": stage_status,
+        "dry_run": args.metrics_dry_run,
+        "modes": mode_summaries,
+        "outputs": ["metrics/<mode>.metrics.json", "metrics/summary.json", "metrics/summary.csv", "logs/metrics_<mode>.log"],
+    }
+
+
 def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> Path:
     repo_root = repo_root or repository_root()
     modes = args.modes or DEFAULT_MODES
@@ -953,6 +1138,44 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
                 error_message="Prediction failed; inspect logs/prediction_<mode>.log",
             )
             raise RuntimeError("Prediction failed; inspect logs/prediction_<mode>.log")
+
+    if args.run_metrics:
+        running_metrics_stage = {
+            "name": "metrics",
+            "status": "running",
+            "dry_run": args.metrics_dry_run,
+            "outputs": ["metrics/<mode>.metrics.json", "metrics/summary.json", "metrics/summary.csv"],
+        }
+        write_run_payload(
+            args=args,
+            run_id=run_id,
+            run_root=run_root,
+            manifest_name=manifest_name,
+            status="running",
+            created_at=now,
+            git=git,
+            stages=[*stages, running_metrics_stage],
+        )
+        metrics_stage = run_metrics_stage(
+            args=args,
+            repo_root=repo_root,
+            run_root=run_root,
+            manifest_name=manifest_name,
+        )
+        stages = [*stages, metrics_stage]
+        if metrics_stage["status"] == "failed":
+            write_run_payload(
+                args=args,
+                run_id=run_id,
+                run_root=run_root,
+                manifest_name=manifest_name,
+                status="failed",
+                created_at=now,
+                git=git,
+                stages=stages,
+                error_message="Metrics failed; inspect logs/metrics_<mode>.log",
+            )
+            raise RuntimeError("Metrics failed; inspect logs/metrics_<mode>.log")
 
     write_run_payload(
         args=args,

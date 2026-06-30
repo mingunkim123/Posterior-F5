@@ -12,6 +12,7 @@ posterior_cache/
 experiments/
 eval_outputs/
 mlops_artifacts/
+node_modules/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

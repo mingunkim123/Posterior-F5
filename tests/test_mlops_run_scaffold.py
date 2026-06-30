@@ -261,3 +261,64 @@ def test_run_scaffold_can_plan_prediction_jsonl(tmp_path):
     assert hard_prediction["hypothesis"] == ""
     assert hard_prediction["status"] == "planned"
     assert soft_prediction["generated_audio"] == "generated/soft_ctc/utt-001.wav"
+
+
+def test_run_scaffold_can_compute_metrics_summary(tmp_path):
+    ref_audio = tmp_path / "ref.wav"
+    ref_audio.write_bytes(b"not-used-in-dry-run")
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "utterance_id": "utt-001",
+                "ref_audio": str(ref_audio),
+                "ref_text": "Reference transcript.",
+                "gen_text": "Target text.",
+                "text": "Target text.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--run_id",
+            "run_metrics",
+            "--artifact_root",
+            str(tmp_path / "runs"),
+            "--manifest",
+            str(manifest),
+            "--run_posterior_extraction",
+            "--skip_whisper",
+            "--run_inference",
+            "--inference_dry_run",
+            "--run_prediction",
+            "--prediction_dry_run",
+            "--run_metrics",
+        ],
+        cwd=Path.cwd(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    run_root = Path(result.stdout.strip())
+    payload = json.loads((run_root / "run.json").read_text(encoding="utf-8"))
+    hard_metrics = json.loads((run_root / "metrics" / "hard.metrics.json").read_text(encoding="utf-8"))
+    oracle_metrics = json.loads((run_root / "metrics" / "oracle.metrics.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_root / "metrics" / "summary.json").read_text(encoding="utf-8"))
+    summary_csv = (run_root / "metrics" / "summary.csv").read_text(encoding="utf-8")
+
+    assert payload["status"] == "completed"
+    assert payload["stages"][4]["name"] == "metrics"
+    assert payload["stages"][4]["status"] == "succeeded"
+    assert hard_metrics["status"] == "succeeded"
+    assert hard_metrics["mode"] == "hard"
+    assert hard_metrics["num_utterances"] == 1
+    assert hard_metrics["wer"] == 1.0
+    assert oracle_metrics["mode"] == "oracle"
+    assert len(summary["modes"]) == 4
+    assert "mode,num_utterances,wer,cer" in summary_csv

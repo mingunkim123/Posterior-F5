@@ -18,7 +18,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--manifest", required=True, help="Evaluation JSONL manifest with reference text.")
     parser.add_argument("--predictions", required=True, help="JSONL predictions with utterance_id and hypothesis text.")
     parser.add_argument("--output", required=True, help="Output JSON metrics file.")
-    parser.add_argument("--mode", default="hard", choices=["hard", "length_only", "soft_ctc", "posterior_encoder"])
+    parser.add_argument(
+        "--mode",
+        default="hard",
+        choices=["hard", "oracle", "length_only", "soft_ctc", "posterior_encoder", "hybrid"],
+    )
     parser.add_argument("--posterior_file", default="", help="Optional posterior cache manifest used for this run.")
     return parser.parse_args()
 
