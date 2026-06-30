@@ -83,19 +83,52 @@ function statusIcon(status: string) {
   return <CircleDot size={16} />;
 }
 
+function statusLabel(status?: string, dryRun?: boolean): string {
+  if (dryRun && status === "planned") return "계획만";
+  if (status === "succeeded" || status === "completed") return "완료";
+  if (status === "failed") return "실패";
+  if (status === "running") return "실행 중";
+  if (status === "queued") return "대기 중";
+  if (status === "submitted") return "제출됨";
+  if (status === "planned") return "예정";
+  return status ?? "대기";
+}
+
 function stageLabel(name: string): string {
-  return name.replace(/_/g, " ");
+  const labels: Record<string, string> = {
+    scaffold: "실험 준비",
+    posterior_extraction: "Posterior 생성",
+    inference: "음성 생성",
+    prediction: "ASR 변환",
+    metrics: "점수 계산",
+    job: "Worker 작업",
+    queued: "대기열",
+  };
+  return labels[name] ?? name.replace(/_/g, " ");
+}
+
+function stageMeta(name: string): string {
+  const labels: Record<string, string> = {
+    scaffold: "파일과 설정",
+    posterior_extraction: "참조 신호",
+    inference: "mode별 wav",
+    prediction: "ASR 결과",
+    metrics: "WER and CER",
+    job: "worker 상태",
+    queued: "실행 대기",
+  };
+  return labels[name] ?? "stage";
 }
 
 type ViewKey = "overview" | "launch" | "runs" | "results" | "logs" | "utterances";
 
 const viewLabels: Record<ViewKey, string> = {
-  overview: "Overview",
-  launch: "Launch",
-  runs: "Runs",
-  results: "Results",
-  logs: "Logs",
-  utterances: "Utterances",
+  overview: "개요",
+  launch: "실험 시작",
+  runs: "실험 기록",
+  results: "결과 분석",
+  logs: "실행 로그",
+  utterances: "샘플 검토",
 };
 
 function viewIcon(view: ViewKey) {
@@ -139,9 +172,9 @@ function SideNav({
         ))}
       </nav>
       <div className="sideMeta">
-        <small>Selected</small>
+        <small>선택된 실험</small>
         <strong>{run?.run_id ?? "none"}</strong>
-        <em className={`pill status-${run?.status ?? "planned"}`}>{run?.status ?? "idle"}</em>
+        <em className={`pill status-${run?.status ?? "planned"}`}>{statusLabel(run?.status)}</em>
       </div>
       <div className="sideFooter">
         <span className={apiState === "api" ? "apiBadge live" : "apiBadge"}>
@@ -158,23 +191,23 @@ function RunSummary({ job, metrics, run, utterances }: { job?: RunJob; metrics: 
   return (
     <section className="summaryBand">
       <div>
-        <small>Run</small>
+        <small>현재 실험</small>
         <strong>{run?.run_id ?? "none"}</strong>
       </div>
       <div>
-        <small>Run status</small>
-        <strong>{run?.status ?? "idle"}</strong>
+        <small>실험 상태</small>
+        <strong>{statusLabel(run?.status)}</strong>
       </div>
       <div>
-        <small>Job status</small>
-        <strong>{job?.status ?? "idle"}</strong>
+        <small>작업 상태</small>
+        <strong>{statusLabel(job?.status)}</strong>
       </div>
       <div>
-        <small>Modes</small>
+        <small>모드</small>
         <strong>{run?.modes?.length ?? metrics.length}</strong>
       </div>
       <div>
-        <small>Utterances</small>
+        <small>샘플</small>
         <strong>{utterances.length}</strong>
       </div>
     </section>
@@ -187,7 +220,7 @@ function PipelineGraph({ run }: { run?: Run }) {
     <section className="panel pipeline">
       <div className="panelHeader">
         <div>
-          <h2>Pipeline</h2>
+          <h2>실험 진행 상태</h2>
           <p>{run?.run_id ?? "No run selected"}</p>
         </div>
         <Activity size={20} />
@@ -198,7 +231,8 @@ function PipelineGraph({ run }: { run?: Run }) {
             <div className={`stageDot status-${stage.status}`}>{statusIcon(stage.status)}</div>
             <div>
               <strong>{stageLabel(stage.name)}</strong>
-              <span>{stage.dry_run ? `${stage.status} dry` : stage.status}</span>
+              <span>{stageMeta(stage.name)}</span>
+              <em>{statusLabel(stage.status, stage.dry_run)}</em>
             </div>
           </div>
         ))}
@@ -214,8 +248,8 @@ function MetricBars({ metrics }: { metrics: MetricRow[] }) {
     <section className="panel metricPanel">
       <div className="panelHeader">
         <div>
-          <h2>Metrics</h2>
-          <p>WER and CER by mode</p>
+          <h2>품질 지표</h2>
+          <p>mode별 WER / CER</p>
         </div>
         <BarChart3 size={20} />
       </div>
@@ -259,8 +293,8 @@ function RunList({
     <section className="panel runList">
       <div className="panelHeader">
         <div>
-          <h2>Runs</h2>
-          <p>{runs.length} tracked</p>
+          <h2>실험 기록</h2>
+          <p>{runs.length} runs</p>
         </div>
         <ListFilter size={20} />
       </div>
@@ -271,7 +305,7 @@ function RunList({
               <strong>{run.run_id}</strong>
               <small>{run.experiment ?? "experiment"}</small>
             </span>
-            <em className={`pill status-${run.status}`}>{run.status}</em>
+            <em className={`pill status-${run.status}`}>{statusLabel(run.status)}</em>
           </button>
         ))}
       </div>
@@ -320,18 +354,18 @@ function RunLauncher({
     <section className="panel launcher">
       <div className="panelHeader">
         <div>
-          <h2>New Run</h2>
-          <p>{apiState === "demo" ? "API unavailable" : "Create local artifact run"}</p>
+          <h2>실험 시작</h2>
+          <p>{apiState === "demo" ? "API unavailable" : "local artifact run"}</p>
         </div>
         <Play size={20} />
       </div>
       <form className="runForm" onSubmit={(event) => void submit(event)}>
         <label>
-          <span>Experiment</span>
+          <span>실험 이름</span>
           <input value={payload.experiment} onChange={(event) => setValue("experiment", event.target.value)} required />
         </label>
         <label>
-          <span>Manifest</span>
+          <span>Manifest 경로</span>
           <input value={payload.manifest} onChange={(event) => setValue("manifest", event.target.value)} required />
         </label>
         <label>
@@ -349,37 +383,37 @@ function RunLauncher({
         <div className="toggleGrid">
           <label className="checkRow">
             <input checked={payload.run_posterior_extraction} type="checkbox" onChange={(event) => setValue("run_posterior_extraction", event.target.checked)} />
-            <span>Posterior</span>
+            <span>Posterior 생성</span>
           </label>
           <label className="checkRow">
             <input checked={payload.run_inference} type="checkbox" onChange={(event) => setValue("run_inference", event.target.checked)} />
-            <span>Inference</span>
+            <span>음성 생성</span>
           </label>
           <label className="checkRow">
             <input checked={payload.run_prediction} type="checkbox" onChange={(event) => setValue("run_prediction", event.target.checked)} />
-            <span>Prediction</span>
+            <span>ASR 변환</span>
           </label>
           <label className="checkRow">
             <input checked={payload.run_metrics} type="checkbox" onChange={(event) => setValue("run_metrics", event.target.checked)} />
-            <span>Metrics</span>
+            <span>점수 계산</span>
           </label>
         </div>
         <div className="toggleGrid dryToggles">
           <label className="checkRow">
             <input checked={payload.skip_whisper} type="checkbox" onChange={(event) => setValue("skip_whisper", event.target.checked)} />
-            <span>Skip Whisper</span>
+            <span>Manifest text 사용</span>
           </label>
           <label className="checkRow">
             <input checked={payload.inference_dry_run} type="checkbox" onChange={(event) => setValue("inference_dry_run", event.target.checked)} />
-            <span>Inference dry</span>
+            <span>음성 계획만</span>
           </label>
           <label className="checkRow">
             <input checked={payload.prediction_dry_run} type="checkbox" onChange={(event) => setValue("prediction_dry_run", event.target.checked)} />
-            <span>Prediction dry</span>
+            <span>ASR 계획만</span>
           </label>
           <label className="checkRow">
             <input checked={payload.fail_if_exists} type="checkbox" onChange={(event) => setValue("fail_if_exists", event.target.checked)} />
-            <span>Unique run</span>
+            <span>새 ID 강제</span>
           </label>
         </div>
         <div className="formFooter">
@@ -394,7 +428,7 @@ function RunLauncher({
           </label>
           <button className="primaryButton" disabled={disabled || payload.modes.length === 0} type="submit">
             <Play size={16} />
-            <span>{isSubmitting ? "Starting" : "Start"}</span>
+            <span>{isSubmitting ? "Starting" : "실험 시작"}</span>
           </button>
         </div>
       </form>
@@ -410,7 +444,7 @@ function UtteranceInspector({ utterances, runId }: { utterances: Utterance[]; ru
     <section className="panel inspector">
       <div className="panelHeader">
         <div>
-          <h2>Utterances</h2>
+          <h2>샘플 검토</h2>
           <p>{utterances.length} samples</p>
         </div>
         <FileAudio size={20} />
@@ -463,8 +497,8 @@ function FailureTable({ metrics }: { metrics: MetricRow[] }) {
     <section className="panel compactPanel">
       <div className="panelHeader">
         <div>
-          <h2>Breakdown</h2>
-          <p>Word error counts</p>
+          <h2>오류 분석</h2>
+          <p>word-level counts</p>
         </div>
         <Database size={20} />
       </div>
@@ -498,8 +532,8 @@ function JobLogs({ job, logs }: { job?: RunJob; logs?: RunLogs }) {
     <section className="panel logsPanel">
       <div className="panelHeader">
         <div>
-          <h2>Job Logs</h2>
-          <p>{job ? `${job.status}${job.pid ? ` pid ${job.pid}` : ""}` : "No job selected"}</p>
+          <h2>실행 로그</h2>
+          <p>{job ? `${statusLabel(job.status)}${job.pid ? ` pid ${job.pid}` : ""}` : "No job selected"}</p>
         </div>
         <Terminal size={20} />
       </div>
@@ -510,7 +544,7 @@ function JobLogs({ job, logs }: { job?: RunJob; logs?: RunLogs }) {
       </div>
       <div className="logFiles">
         {files.length === 0 ? (
-          <pre>No logs yet.</pre>
+          <pre>아직 로그가 없습니다.</pre>
         ) : (
           files.map((file) => (
             <div className="logFile" key={file.path}>
@@ -653,7 +687,7 @@ function App() {
     void refresh();
   }, []);
 
-  const pageMeta = selectedRun?.artifact_root ?? "mlops_artifacts/runs";
+  const pageMeta = selectedRun?.experiment ?? selectedRun?.artifact_root ?? "mlops_artifacts/runs";
 
   return (
     <div className="appShell">

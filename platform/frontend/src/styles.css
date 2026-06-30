@@ -1,6 +1,6 @@
 :root {
-  color: #1f2933;
-  background: #eef2f1;
+  color: #182230;
+  background: #f5f7fa;
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
@@ -16,11 +16,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
-  background:
-    linear-gradient(90deg, rgba(36, 72, 85, 0.06) 1px, transparent 1px),
-    linear-gradient(0deg, rgba(36, 72, 85, 0.06) 1px, transparent 1px),
-    #eef2f1;
-  background-size: 28px 28px;
+  background: #f5f7fa;
 }
 
 button {
@@ -36,6 +32,7 @@ button {
 .dashboardMain {
   min-width: 0;
   padding: 26px 28px;
+  background: #f5f7fa;
 }
 
 .topbar {
@@ -66,7 +63,7 @@ button {
   border: 1px solid #cdd7d8;
   border-radius: 8px;
   background: #ffffff;
-  color: #244855;
+  color: #2563eb;
 }
 
 .brandMark {
@@ -76,8 +73,8 @@ button {
   height: 44px;
   border-radius: 8px;
   color: white;
-  background: #244855;
-  box-shadow: 0 12px 30px rgba(36, 72, 85, 0.18);
+  background: #0f172a;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
 }
 
 h1,
@@ -123,10 +120,10 @@ th {
   grid-template-rows: auto 1fr auto auto;
   gap: 18px;
   height: 100vh;
-  border-right: 1px solid #d9e1e2;
+  border-right: 1px solid #e5e7eb;
   padding: 18px 12px;
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 10px 0 34px rgba(31, 41, 51, 0.05);
+  background: #ffffff;
+  box-shadow: 10px 0 28px rgba(15, 23, 42, 0.04);
 }
 
 .sideBrand {
@@ -135,7 +132,7 @@ th {
   gap: 10px;
   min-width: 0;
   padding: 4px 6px 10px;
-  border-bottom: 1px solid #e5ebec;
+  border-bottom: 1px solid #edf1f5;
 }
 
 .sideBrand h1 {
@@ -167,7 +164,7 @@ th {
   border-radius: 8px;
   padding: 0 11px;
   background: transparent;
-  color: #465662;
+  color: #475569;
   cursor: pointer;
   font-weight: 800;
   text-align: left;
@@ -175,7 +172,7 @@ th {
 
 .navItem:hover,
 .navItem.active {
-  background: #1f2933;
+  background: #0f172a;
   color: #ffffff;
 }
 
@@ -183,7 +180,7 @@ th {
   display: grid;
   gap: 7px;
   min-width: 0;
-  border-top: 1px solid #e5ebec;
+  border-top: 1px solid #edf1f5;
   padding: 12px 6px 0;
 }
 
@@ -222,9 +219,9 @@ th {
 
 .apiBadge,
 .iconButton {
-  border: 1px solid #c9d3d4;
+  border: 1px solid #d8dee7;
   background: #ffffff;
-  color: #244855;
+  color: #1e3a8a;
 }
 
 .apiBadge {
@@ -239,9 +236,9 @@ th {
 }
 
 .apiBadge.live {
-  color: #1e6b55;
-  border-color: #9fc7b8;
-  background: #f4fbf7;
+  color: #047857;
+  border-color: #b7e4d1;
+  background: #f0fdf7;
 }
 
 .iconButton {
@@ -260,10 +257,10 @@ th {
   justify-content: center;
   gap: 7px;
   min-height: 38px;
-  border: 1px solid #244855;
+  border: 1px solid #0f172a;
   border-radius: 8px;
   padding: 0 13px;
-  background: #244855;
+  background: #0f172a;
   color: #ffffff;
   font-weight: 800;
   cursor: pointer;
@@ -279,15 +276,15 @@ th {
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1px;
   overflow: hidden;
-  border: 1px solid #cdd7d8;
+  border: 1px solid #d9e0e8;
   border-radius: 8px;
-  background: #cdd7d8;
+  background: #d9e0e8;
 }
 
 .summaryBand div {
   min-width: 0;
-  padding: 14px 16px;
-  background: rgba(255, 255, 255, 0.9);
+  padding: 16px 18px;
+  background: #ffffff;
 }
 
 .summaryBand small {
@@ -347,10 +344,10 @@ th {
 }
 
 .panel {
-  border: 1px solid #cdd7d8;
+  border: 1px solid #d9e0e8;
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 18px 44px rgba(31, 41, 51, 0.08);
+  background: #ffffff;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
 }
 
 .panelHeader {
@@ -360,8 +357,8 @@ th {
   gap: 12px;
   min-height: 64px;
   padding: 14px 16px;
-  border-bottom: 1px solid #e1e7e8;
-  color: #244855;
+  border-bottom: 1px solid #edf1f5;
+  color: #0f172a;
 }
 
 .runRows,
@@ -380,7 +377,7 @@ th {
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: #1f2933;
+  color: #182230;
   padding: 11px 10px;
   text-align: left;
   cursor: pointer;
@@ -390,7 +387,7 @@ th {
 .runRow.active,
 .utteranceButton:hover,
 .utteranceButton.active {
-  background: #eef4f3;
+  background: #f1f5f9;
 }
 
 .runRow span,
@@ -423,45 +420,46 @@ th {
   font-size: 11px;
   font-style: normal;
   font-weight: 800;
-  background: #edf0f2;
-  color: #5d6972;
+  background: #eef2f7;
+  color: #475569;
 }
 
 .status-completed,
 .status-succeeded {
-  color: #1e6b55;
-  background: #e8f5ef;
+  color: #047857;
+  background: #e8f7ef;
 }
 
 .status-failed {
-  color: #9d3b3b;
-  background: #faecec;
+  color: #b42318;
+  background: #fff0ee;
 }
 
 .status-planned,
 .status-queued,
 .status-submitted,
 .status-running {
-  color: #8b6425;
-  background: #fbf1df;
+  color: #b45309;
+  background: #fff7df;
 }
 
 .pipeline {
-  min-height: 258px;
+  min-height: 0;
 }
 
 .stageRail {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
-  gap: 8px;
+  gap: 10px;
+  padding: 14px;
 }
 
 .stageNode {
   min-width: 0;
-  padding: 12px;
-  border: 1px solid #dce3e4;
+  padding: 14px;
+  border: 1px solid #e1e7ef;
   border-radius: 8px;
-  background: #fbfcfc;
+  background: #fbfcfe;
 }
 
 .stageDot {
@@ -474,7 +472,8 @@ th {
 }
 
 .stageNode strong,
-.stageNode span {
+.stageNode span,
+.stageNode em {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -483,9 +482,17 @@ th {
 }
 
 .stageNode span {
-  color: #687782;
+  color: #64748b;
   font-size: 12px;
   margin-top: 4px;
+}
+
+.stageNode em {
+  margin-top: 10px;
+  color: #334155;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
 }
 
 .launcher {
@@ -516,17 +523,17 @@ th {
   width: 100%;
   min-width: 0;
   min-height: 36px;
-  border: 1px solid #ccd7d8;
+  border: 1px solid #d4dce7;
   border-radius: 8px;
   padding: 0 10px;
-  background: #fbfcfc;
-  color: #1f2933;
+  background: #ffffff;
+  color: #182230;
   font: inherit;
 }
 
 .runForm input:focus {
-  border-color: #3d6b99;
-  outline: 3px solid rgba(61, 107, 153, 0.16);
+  border-color: #2563eb;
+  outline: 3px solid rgba(37, 99, 235, 0.14);
 }
 
 .modePicker {
@@ -540,7 +547,7 @@ th {
   align-items: center;
   gap: 6px;
   min-height: 30px;
-  border: 1px solid #d7e0e1;
+  border: 1px solid #d8dee7;
   border-radius: 8px;
   padding: 0 8px;
   background: #ffffff;
@@ -551,9 +558,9 @@ th {
 }
 
 .modeChoice.active {
-  border-color: #9fc7b8;
-  background: #f0f8f4;
-  color: #1e6b55;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1d4ed8;
 }
 
 .toggleGrid {
@@ -568,17 +575,17 @@ th {
   align-items: center;
   gap: 7px !important;
   min-height: 32px;
-  border: 1px solid #dce3e4;
+  border: 1px solid #d9e0e8;
   border-radius: 8px;
   padding: 0 8px;
-  background: #fbfcfc;
+  background: #ffffff;
 }
 
 .checkRow input {
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: #244855;
+  accent-color: #0f172a;
 }
 
 .checkRow span {
@@ -641,7 +648,7 @@ th {
   height: 10px;
   overflow: hidden;
   border-radius: 999px;
-  background: #e5ebec;
+  background: #e9eef5;
 }
 
 .barTrack.muted {
@@ -702,15 +709,15 @@ th {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
-  border-bottom: 1px solid #e1e7e8;
-  background: #e1e7e8;
+  border-bottom: 1px solid #edf1f5;
+  background: #edf1f5;
 }
 
 .jobMeta span {
   min-width: 0;
   overflow: hidden;
   padding: 10px 12px;
-  background: #fbfcfc;
+  background: #ffffff;
   color: #687782;
   font-size: 12px;
   text-overflow: ellipsis;
@@ -730,7 +737,7 @@ th {
   margin: 0;
   overflow: auto;
   border-radius: 8px;
-  background: #1f2933;
+  background: #0f172a;
   color: #f5f7f8;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
   font-size: 12px;
@@ -745,7 +752,7 @@ th {
 
 .logFile {
   overflow: hidden;
-  border: 1px solid #dce3e4;
+  border: 1px solid #d9e0e8;
   border-radius: 8px;
   background: #ffffff;
 }
@@ -756,7 +763,7 @@ th {
   justify-content: space-between;
   gap: 10px;
   padding: 10px 12px;
-  border-bottom: 1px solid #e1e7e8;
+  border-bottom: 1px solid #edf1f5;
 }
 
 .logFile strong,
@@ -786,7 +793,7 @@ th {
 }
 
 .utteranceList {
-  border-right: 1px solid #e1e7e8;
+  border-right: 1px solid #edf1f5;
   padding: 10px;
 }
 
@@ -796,11 +803,11 @@ th {
 }
 
 .textBlock {
-  border: 1px solid #dce3e4;
+  border: 1px solid #d9e0e8;
   border-radius: 8px;
   padding: 12px;
   margin-bottom: 12px;
-  background: #fbfcfc;
+  background: #ffffff;
 }
 
 .textBlock small {
@@ -816,7 +823,7 @@ th {
 }
 
 .audioItem {
-  border: 1px solid #dce3e4;
+  border: 1px solid #d9e0e8;
   border-radius: 8px;
   padding: 11px;
   background: #ffffff;
@@ -839,7 +846,7 @@ audio {
   place-items: center;
   height: 34px;
   border-radius: 8px;
-  background: #eef2f1;
+  background: #f1f5f9;
   color: #687782;
   font-size: 12px;
   font-weight: 700;
@@ -853,13 +860,13 @@ audio {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  border: 1px solid #c9d3d4;
+  border: 1px solid #d8dee7;
   border-radius: 8px;
   padding: 12px 14px;
   background: #ffffff;
-  color: #244855;
+  color: #0f172a;
   font-weight: 800;
-  box-shadow: 0 18px 44px rgba(31, 41, 51, 0.16);
+  box-shadow: 0 18px 44px rgba(15, 23, 42, 0.14);
 }
 
 @media (max-width: 1120px) {
@@ -885,7 +892,7 @@ audio {
     grid-template-rows: auto auto auto;
     height: auto;
     border-right: 0;
-    border-bottom: 1px solid #d9e1e2;
+    border-bottom: 1px solid #e5e7eb;
   }
 
   .navMenu {
