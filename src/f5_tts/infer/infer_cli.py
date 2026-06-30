@@ -33,7 +33,9 @@ from f5_tts.infer.utils_infer import (
 )
 from f5_tts.model.utils import convert_char_to_pinyin, list_str_to_idx, list_str_to_tensor
 from f5_tts.model.hybrid_reference_conditioner import HybridReferenceConditioner
+from f5_tts.model.posterior_encoder import load_posterior_encoder_checkpoint
 from f5_tts.posterior.io import load_posterior_manifest, load_topk_arrays
+from f5_tts.posterior.soft_embedding import expected_embedding_from_topk
 
 
 parser = argparse.ArgumentParser(
@@ -91,13 +93,18 @@ parser.add_argument(
 parser.add_argument(
     "--ref_text_mode",
     type=str,
-    choices=["hard", "length_only", "soft_ctc", "hybrid"],
+    choices=["hard", "length_only", "soft_ctc", "posterior_encoder", "hybrid"],
     help="Reference text conditioning mode, default hard.",
 )
 parser.add_argument(
     "--posterior_file",
     type=str,
     help="JSONL posterior manifest used by length_only mode.",
+)
+parser.add_argument(
+    "--posterior_encoder_ckpt",
+    type=str,
+    help="Posterior encoder checkpoint for posterior_encoder mode.",
 )
 parser.add_argument(
     "-t",
@@ -218,6 +225,7 @@ gen_text = args.gen_text or config.get("gen_text", "Here we generate something j
 gen_file = args.gen_file or config.get("gen_file", "")
 ref_text_mode = args.ref_text_mode or config.get("ref_text_mode", "hard")
 posterior_file = args.posterior_file or config.get("posterior_file", "")
+posterior_encoder_ckpt = args.posterior_encoder_ckpt or config.get("posterior_encoder_ckpt", "")
 
 output_dir = args.output_dir or config.get("output_dir", "tests")
 output_file = args.output_file or config.get(
@@ -257,7 +265,7 @@ if "voices" in config:
         if "infer/examples/" in voice_ref_audio and not Path(voice_ref_audio).expanduser().exists():
             config["voices"][voice]["ref_audio"] = str(files("f5_tts").joinpath(f"{voice_ref_audio}"))
 
-if ref_text_mode not in {"hard", "length_only", "soft_ctc", "hybrid"}:
+if ref_text_mode not in {"hard", "length_only", "soft_ctc", "posterior_encoder", "hybrid"}:
     raise ValueError(f"Unsupported ref_text_mode: {ref_text_mode}")
 
 posterior_entries = []
@@ -371,17 +379,12 @@ def _compressed_soft_ref_embed(token_ids, probs, embedding_weight, hard_ref_embe
             soft_rows.append(hard_ref_embed[:, index, :])
             continue
 
-        projected_ids = torch.tensor(
-            [token_id + 1 for token_id in mass_by_token],
-            device=embedding_weight.device,
-            dtype=torch.long,
+        soft = expected_embedding_from_topk(
+            [[token_id for token_id in mass_by_token]],
+            [[prob / total for prob in mass_by_token.values()]],
+            embedding_weight,
+            normalize=False,
         )
-        weights = torch.tensor(
-            [prob / total for prob in mass_by_token.values()],
-            device=embedding_weight.device,
-            dtype=embedding_weight.dtype,
-        )
-        soft = (embedding_weight[projected_ids] * weights.unsqueeze(-1)).sum(dim=0, keepdim=True)
         soft_rows.append(hard_ref_embed[:, index, :] * (1.0 - blend) + soft * blend)
 
     return torch.stack(soft_rows, dim=1)
@@ -424,6 +427,60 @@ def _soft_ctc_builder_for_entry(utterance):
         return hard_embed
 
     return _builder
+
+
+def _posterior_encoder_builder_for_entry(utterance):
+    if ref_text_mode != "posterior_encoder" or utterance is None or utterance.frame_posteriors is None:
+        return None
+    if not posterior_encoder_ckpt:
+        print("Warning: posterior_encoder mode requires --posterior_encoder_ckpt. Falling back to hard text embedding.")
+        return None
+
+    base_dir = Path(posterior_file).expanduser().resolve().parent if posterior_file else None
+    encoder_cache = {"encoder": None}
+
+    def _builder(model_obj, text, duration, ref_audio_len, ref_text, gen_text, device):
+        del gen_text, ref_audio_len
+        if encoder_cache["encoder"] is None:
+            encoder, _ = load_posterior_encoder_checkpoint(posterior_encoder_ckpt, map_location=device)
+            encoder_cache["encoder"] = encoder.to(device).eval()
+
+        token_ids, probs = load_topk_arrays(utterance.frame_posteriors, base_dir=base_dir)
+        token_ids = _project_asr_topk_to_f5_ids(token_ids, utterance.token_map, model_obj.vocab_char_map)
+        token_tensor = torch.tensor(token_ids, device=device, dtype=torch.long).unsqueeze(0)
+        prob_tensor = torch.tensor(probs, device=device, dtype=torch.float32).unsqueeze(0)
+
+        text_tensor = _text_tensor_from_list(model_obj, text, device)
+        with torch.inference_mode():
+            hard_embed = model_obj.transformer.text_embed(text_tensor, seq_len=duration, drop_text=False).clone()
+            post_hidden = encoder_cache["encoder"](token_tensor, prob_tensor)
+
+        ref_token_text = convert_char_to_pinyin([ref_text])[0]
+        ref_token_len = min(len(ref_token_text), hard_embed.shape[1])
+        if ref_token_len <= 0:
+            return hard_embed
+
+        if post_hidden.shape[1] != ref_token_len:
+            post_hidden = torch.nn.functional.interpolate(
+                post_hidden.transpose(1, 2),
+                size=ref_token_len,
+                mode="linear",
+                align_corners=False,
+            ).transpose(1, 2)
+
+        replace_len = min(ref_token_len, post_hidden.shape[1], hard_embed.shape[1])
+        hard_embed[:, :replace_len, :] = post_hidden[:, :replace_len, :].to(
+            device=hard_embed.device, dtype=hard_embed.dtype
+        )
+        return hard_embed
+
+    return _builder
+
+
+def _text_embed_override_builder_for_entry(utterance):
+    if ref_text_mode == "posterior_encoder":
+        return _posterior_encoder_builder_for_entry(utterance)
+    return _soft_ctc_builder_for_entry(utterance)
 
 
 # ignore gen_text if gen_file provided
@@ -507,7 +564,7 @@ def main():
         print("ref_audio ", voices[voice]["ref_audio"])
         voices[voice]["posterior_entry"] = _posterior_entry_for_audio(voices[voice]["ref_audio"])
         voices[voice]["expected_ref_text_len"] = _expected_ref_text_len_for_entry(voices[voice]["posterior_entry"])
-        voices[voice]["text_embed_override_builder"] = _soft_ctc_builder_for_entry(voices[voice]["posterior_entry"])
+        voices[voice]["text_embed_override_builder"] = _text_embed_override_builder_for_entry(voices[voice]["posterior_entry"])
         voices[voice]["ref_audio"], voices[voice]["ref_text"] = preprocess_ref_audio_text(
             voices[voice]["ref_audio"], voices[voice]["ref_text"]
         )

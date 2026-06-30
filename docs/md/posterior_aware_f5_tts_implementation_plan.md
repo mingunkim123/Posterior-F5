@@ -878,6 +878,16 @@ Stage 1까지 끝나면 `posterior_encoder`나 `hybrid`가 없어도 최소 논�
 | Step 105 | `platform/workers/run_posterior_f5_pipeline.py` | `posterior_encoder` mode를 runner에 연결하고 ckpt path를 command metadata에 남긴다. | dry-run command 확인 |
 | Step 106 | 없음 | 1개 batch overfit checkpoint로 `posterior_encoder` inference smoke를 실행한다. | wav 생성 확인 |
 
+진행 기록:
+
+- Step 100: `PosteriorCacheDataset`이 `oracle_text_tensor`, `seq_len`, `posterior_mask`, `blank_prob`를 batch item에 포함하도록 확장했다.
+- Step 101: `train_posterior.py`에 checkpointable `train_posterior_encoder()` loop와 `--synthetic_smoke` contract를 추가했다.
+- Step 102: `tests/test_train_posterior_step.py`로 synthetic training checkpoint와 finite loss를 검증했다.
+- Step 103: `posterior_encoder.py`에 config serialization, checkpoint save/load helper를 추가했다.
+- Step 104: `infer_cli.py`에 `posterior_encoder` mode와 `--posterior_encoder_ckpt`를 추가했다. CTC top-k posterior를 encoder hidden으로 변환해 reference token 구간에 주입한다.
+- Step 105: platform runner가 `posterior_encoder` mode command와 checkpoint path를 생성하도록 연결했다.
+- Step 106: synthetic checkpoint smoke는 통과했다. 실제 wav inference smoke는 posterior encoder가 real F5 text_dim으로 학습된 후 GPU 환경에서 실행한다.
+
 ### G. 진짜 SSL hybrid 완성
 
 | Step | 파일 | 작업 | 확인 |

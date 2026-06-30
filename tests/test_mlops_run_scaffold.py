@@ -214,6 +214,56 @@ def test_run_scaffold_can_plan_mode_inference_commands(tmp_path):
     assert "--posterior_file" in soft_command["command"]
 
 
+def test_run_scaffold_can_plan_posterior_encoder_command(tmp_path):
+    ref_audio = tmp_path / "ref.wav"
+    ref_audio.write_bytes(b"not-used-in-dry-run")
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "utterance_id": "utt-001",
+                "ref_audio": str(ref_audio),
+                "ref_text": "Reference transcript.",
+                "gen_text": "Target text.",
+                "text": "Target text.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--run_id",
+            "run_posterior_encoder_plan",
+            "--artifact_root",
+            str(tmp_path / "runs"),
+            "--manifest",
+            str(manifest),
+            "--mode",
+            "posterior_encoder",
+            "--posterior_encoder_ckpt",
+            "ckpts/posterior_encoder/dev_latest/model_last.pt",
+            "--run_posterior_extraction",
+            "--skip_whisper",
+            "--run_inference",
+            "--inference_dry_run",
+        ],
+        cwd=Path.cwd(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    run_root = Path(result.stdout.strip())
+    command_row = json.loads((run_root / "generated" / "posterior_encoder" / "commands.jsonl").read_text(encoding="utf-8"))
+
+    assert "posterior_encoder" in command_row["command"]
+    assert "--posterior_encoder_ckpt" in command_row["command"]
+
+
 def test_run_scaffold_can_plan_prediction_jsonl(tmp_path):
     ref_audio = tmp_path / "ref.wav"
     ref_audio.write_bytes(b"not-used-in-dry-run")
@@ -463,6 +513,7 @@ Path(args.output_dir, args.output_file).write_bytes(b"tiny")
         hard_ref_text_source="empty",
         infer_device=None,
         vocab_file="",
+        posterior_encoder_ckpt="",
         min_wav_bytes=44,
         eval_asr="openai/whisper-large-v3-turbo",
         run_prediction=False,

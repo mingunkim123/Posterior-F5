@@ -78,6 +78,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--infer_device", default=None, help="Device passed to infer_cli.py, e.g. cuda, mps, or cpu.")
     parser.add_argument("--vocab_file", default="", help="Optional vocab file passed to infer_cli.py.")
+    parser.add_argument("--posterior_encoder_ckpt", default="", help="Posterior encoder checkpoint for posterior_encoder mode.")
     parser.add_argument("--min_wav_bytes", type=int, default=44, help="Minimum accepted wav file size after non-dry-run inference.")
     parser.add_argument("--eval_asr", default="openai/whisper-large-v3-turbo")
     parser.add_argument(
@@ -165,6 +166,7 @@ def apply_config(args: argparse.Namespace, config: dict[str, Any]) -> None:
         "run_inference": "run_inference",
         "inference_dry_run": "inference_dry_run",
         "hard_ref_text_source": "hard_ref_text_source",
+        "posterior_encoder_ckpt": "posterior_encoder_ckpt",
     }
     for source, target in generation_map.items():
         if source in generation:
@@ -485,6 +487,7 @@ def build_run_payload(
             "inference_dry_run": args.inference_dry_run,
             "hard_ref_text_source": args.hard_ref_text_source,
             "min_wav_bytes": args.min_wav_bytes,
+            "posterior_encoder_ckpt": args.posterior_encoder_ckpt,
         },
         "posterior": {
             "asr": posterior_source,
@@ -622,7 +625,7 @@ def run_posterior_extraction_stage(
 def mode_to_cli_ref_text_mode(mode: str) -> str:
     if mode == "oracle":
         return "hard"
-    if mode in {"hard", "length_only", "soft_ctc", "hybrid"}:
+    if mode in {"hard", "length_only", "soft_ctc", "posterior_encoder", "hybrid"}:
         return mode
     raise ValueError(f"Inference mode is not wired yet: {mode}")
 
@@ -681,9 +684,11 @@ def build_inference_command(
         command.extend(["--vocab_file", args.vocab_file])
     if args.infer_device:
         command.extend(["--device", args.infer_device])
-    if mode in {"length_only", "soft_ctc", "hybrid"}:
+    if mode in {"length_only", "soft_ctc", "posterior_encoder", "hybrid"}:
         posterior_file = run_root / "posterior_cache" / "run.posterior.jsonl"
         command.extend(["--posterior_file", str(posterior_file)])
+    if mode == "posterior_encoder" and args.posterior_encoder_ckpt:
+        command.extend(["--posterior_encoder_ckpt", args.posterior_encoder_ckpt])
     return command
 
 
@@ -719,7 +724,7 @@ def run_inference_stage(
         repo_root=repo_root,
     )
     posterior_file = run_root / "posterior_cache" / "run.posterior.jsonl"
-    needs_posterior = any(mode in {"length_only", "soft_ctc", "hybrid"} for mode in modes)
+    needs_posterior = any(mode in {"length_only", "soft_ctc", "posterior_encoder", "hybrid"} for mode in modes)
     if needs_posterior and not posterior_file.exists() and not args.inference_dry_run:
         raise FileNotFoundError(
             "Inference modes length_only/soft_ctc/hybrid require posterior_cache/run.posterior.jsonl. "

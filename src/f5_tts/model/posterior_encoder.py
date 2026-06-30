@@ -104,3 +104,47 @@ def distillation_loss(
     if mask is not None:
         loss = loss.masked_select(mask.unsqueeze(-1))
     return loss.mean()
+
+
+def posterior_encoder_config(encoder: TopKPosteriorEncoder) -> dict:
+    """Return the serializable architecture config for a posterior encoder."""
+
+    return {
+        "vocab_size": encoder.token_embed.num_embeddings - encoder.f5_vocab_offset - 1,
+        "text_dim": encoder.proj_out.out_features,
+        "hidden_dim": encoder.proj_out.in_features,
+        "num_layers": len(encoder.blocks),
+        "f5_vocab_offset": encoder.f5_vocab_offset,
+        "blank_id": encoder.blank_id,
+        "filler_id": encoder.filler_id,
+    }
+
+
+def save_posterior_encoder_checkpoint(
+    path: str,
+    encoder: TopKPosteriorEncoder,
+    *,
+    optimizer: torch.optim.Optimizer | None = None,
+    step: int = 0,
+    extra: dict | None = None,
+) -> None:
+    """Save a posterior encoder checkpoint with config metadata."""
+
+    payload = {
+        "step": step,
+        "config": posterior_encoder_config(encoder),
+        "state_dict": encoder.state_dict(),
+        "extra": extra or {},
+    }
+    if optimizer is not None:
+        payload["optimizer"] = optimizer.state_dict()
+    torch.save(payload, path)
+
+
+def load_posterior_encoder_checkpoint(path: str, *, map_location=None) -> tuple[TopKPosteriorEncoder, dict]:
+    """Load a posterior encoder checkpoint and return ``(encoder, payload)``."""
+
+    payload = torch.load(path, map_location=map_location)
+    encoder = TopKPosteriorEncoder(**payload["config"])
+    encoder.load_state_dict(payload["state_dict"])
+    return encoder, payload

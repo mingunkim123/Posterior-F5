@@ -33,7 +33,7 @@ def test_prepare_text_embed_override_pads_and_trims_when_torch_is_available():
     torch = pytest.importorskip("torch")
     from f5_tts.model.backbones.dit import DiT
 
-    model = DiT(dim=8, depth=1, heads=1, dim_head=8, mel_dim=4, text_num_embeds=6, text_dim=5)
+    model = DiT(dim=16, depth=1, heads=1, dim_head=8, mel_dim=4, text_num_embeds=6, text_dim=5)
 
     short_override = torch.ones(1, 2, 5)
     padded = model.prepare_text_embed_override(short_override, seq_len=4)

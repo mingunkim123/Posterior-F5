@@ -2,7 +2,12 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from f5_tts.model.posterior_encoder import TopKPosteriorEncoder, distillation_loss
+from f5_tts.model.posterior_encoder import (
+    TopKPosteriorEncoder,
+    distillation_loss,
+    load_posterior_encoder_checkpoint,
+    save_posterior_encoder_checkpoint,
+)
 
 
 def test_topk_posterior_encoder_output_shape_and_masking():
@@ -35,3 +40,16 @@ def test_distillation_loss_masks_padding():
     loss = distillation_loss(posterior_hidden, oracle_hidden, mask=mask)
 
     assert loss == pytest.approx(4.0)
+
+
+def test_posterior_encoder_checkpoint_round_trip(tmp_path):
+    encoder = TopKPosteriorEncoder(vocab_size=16, text_dim=8, hidden_dim=12, num_layers=1, blank_id=0)
+    checkpoint = tmp_path / "posterior_encoder.pt"
+
+    save_posterior_encoder_checkpoint(checkpoint, encoder, step=3, extra={"split": "dev"})
+    restored, payload = load_posterior_encoder_checkpoint(checkpoint)
+
+    assert payload["step"] == 3
+    assert payload["extra"]["split"] == "dev"
+    assert restored.proj_out.out_features == 8
+    assert restored.blank_id == 0
