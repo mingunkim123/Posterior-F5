@@ -143,6 +143,19 @@ def extract_ctc_topk(audio_path: str, processor, model, device, *, top_k: int, s
 
     frame_rate = float(top_ids_np.shape[0] / duration_sec) if duration_sec > 0 else None
     blank_id = getattr(processor.tokenizer, "pad_token_id", None)
+    topk_mass = top_probs_np.sum(axis=-1)
+    metadata = {
+        "duration_sec": duration_sec,
+        "requested_top_k": top_k,
+        "stored_top_k": int(top_ids_np.shape[1]),
+        "probability_source": "softmax",
+        "probability_space": "raw_topk_not_renormalized",
+        "topk_mass_min": float(topk_mass.min()) if topk_mass.size else None,
+        "topk_mass_mean": float(topk_mass.mean()) if topk_mass.size else None,
+        "topk_mass_max": float(topk_mass.max()) if topk_mass.size else None,
+        "entropy_normalization": "topk_renormalized",
+        "entropy_base": "e",
+    }
     return TopKPosterior(
         shard_path=shard_path.name,
         num_frames=int(top_ids_np.shape[0]),
@@ -151,7 +164,7 @@ def extract_ctc_topk(audio_path: str, processor, model, device, *, top_k: int, s
         sample_rate=sample_rate,
         blank_id=blank_id,
         source=model.config.name_or_path,
-        metadata={"duration_sec": duration_sec},
+        metadata=metadata,
     )
 
 
@@ -207,8 +220,13 @@ def main() -> None:
                 token_map=token_map,
                 expected_ref_len=expected_text_len(hypotheses),
                 mean_entropy=mean_entropy,
+                duration_sec=frame_posteriors.metadata.get("duration_sec") if frame_posteriors else None,
                 language=args.language or entry.get("language"),
-                metadata={"input": entry},
+                metadata={
+                    "input": entry,
+                    "entropy_normalization": "topk_renormalized" if frame_posteriors else None,
+                    "topk_probability_space": "raw_topk_not_renormalized" if frame_posteriors else None,
+                },
             )
             output_file.write(json.dumps(utterance.to_dict(), ensure_ascii=False) + "\n")
 

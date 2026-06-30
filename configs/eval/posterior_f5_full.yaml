@@ -1,7 +1,9 @@
 name: posterior_f5_full
+stage: full_eval_contract
 manifest: manifests/full_eval.jsonl
-posterior_file: posterior_cache/full_eval.posterior.jsonl
-output_dir: eval_outputs/posterior_f5_full
+artifact_root: mlops_artifacts/runs
+posterior_file: posterior_cache/run.posterior.jsonl
+output_dir: mlops_artifacts/runs
 
 subsets:
   - clean
@@ -9,23 +11,49 @@ subsets:
   - accented
   - dysarthric
 
-modes:
+stage1_modes:
   - hard
   - oracle
   - length_only
   - soft_ctc
+
+stage2_modes:
   - posterior_encoder
+  - hybrid
+
+posterior:
+  run_extraction: true
+  whisper_model: openai/whisper-large-v3-turbo
+  ctc_model: facebook/wav2vec2-base-960h
+  ctc_top_k: 8
+  skip_whisper: false
+  language: en
 
 generation:
   model: F5TTS_v1_Base
+  checkpoint_id: f5tts_v1_base_hf
+  checkpoint: hf://SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors
+  checkpoint_hash: hf:SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors
+  vocoder: vocos
   nfe_step: 32
   cfg_strength: 2.0
   sway_sampling_coef: -1.0
   speed: 1.0
+  seed: 1234
+  hard_ref_text_source: empty
+
+stage2:
+  posterior_encoder_ckpt: ckpts/posterior_encoder/dev_latest/model_last.pt
+  ssl_cache: ssl_cache/full_eval
+  enabled_after:
+    - posterior_encoder inference mode is wired
+    - real hybrid SSL cache is wired
 
 metrics:
-  asr_eval_model: separate_from_posterior_source
+  eval_asr: separate_from_posterior_source
   report_breakdown: true
   report_speaker_similarity: true
   report_utmos: true
+  report_rtf: true
   bootstrap_samples: 10000
+  bootstrap_seed: 1234

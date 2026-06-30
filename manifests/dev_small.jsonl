@@ -1,0 +1,1 @@
+{"utterance_id":"dev_small_001","ref_audio":"src/f5_tts/infer/examples/basic/basic_ref_en.wav","ref_text":"Some call me nature, others call me mother nature.","gen_text":"Hello world from the Posterior-F5 dev small run.","text":"Hello world from the Posterior-F5 dev small run.","subset":"clean/dev_small","language":"en"}

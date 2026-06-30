@@ -67,6 +67,17 @@ PYTHONPATH=src python3 src/f5_tts/scripts/extract_asr_posterior.py \
   --language en
 ```
 
+생성된 cache 검사:
+
+```bash
+PYTHONPATH=src python3 src/f5_tts/scripts/inspect_posterior_cache.py \
+  --posterior_file posterior_cache/dev.posterior.jsonl \
+  --require_frame_posteriors \
+  --expected_count 1
+```
+
+JSON report가 필요하면 `--json`을 추가한다.
+
 ## JSONL schema
 
 각 line은 `PosteriorUtterance` 하나다.
@@ -100,7 +111,18 @@ PYTHONPATH=src python3 src/f5_tts/scripts/extract_asr_posterior.py \
     "sample_rate": 16000,
     "blank_id": 0,
     "source": "facebook/wav2vec2-base-960h",
-    "metadata": {"duration_sec": 10.26}
+    "metadata": {
+      "duration_sec": 10.26,
+      "requested_top_k": 8,
+      "stored_top_k": 8,
+      "probability_source": "softmax",
+      "probability_space": "raw_topk_not_renormalized",
+      "topk_mass_min": 0.91,
+      "topk_mass_mean": 0.97,
+      "topk_mass_max": 0.99,
+      "entropy_normalization": "topk_renormalized",
+      "entropy_base": "e"
+    }
   },
   "token_map": {
     "source": "facebook/wav2vec2-base-960h",
@@ -114,9 +136,13 @@ PYTHONPATH=src python3 src/f5_tts/scripts/extract_asr_posterior.py \
   },
   "expected_ref_len": 11.0,
   "mean_entropy": 0.42,
-  "duration_sec": null,
+  "duration_sec": 10.26,
   "language": "en",
-  "metadata": {"input": {}}
+  "metadata": {
+    "input": {},
+    "entropy_normalization": "topk_renormalized",
+    "topk_probability_space": "raw_topk_not_renormalized"
+  }
 }
 ```
 
@@ -131,6 +157,8 @@ probs: float32 array, shape [num_frames, top_k]
 
 JSONL의 `frame_posteriors.ids_key`와 `frame_posteriors.probs_key`가 실제 `.npz` key 이름이다. 기본값은 각각 `token_ids`, `probs`다.
 
+`probs`는 full softmax에서 top-k만 잘라 저장한 raw mass다. 따라서 각 row의 합은 보통 1 이하이고, `inspect_posterior_cache.py`는 기본적으로 row sum이 `1.0001`을 넘으면 오류로 본다. soft embedding이나 entropy 계산에서 조건부 top-k 분포가 필요하면 row 안에서 다시 normalize한다.
+
 ## Token id 규칙
 
 F5-TTS `TextEmbedding`은 내부에서 hard token id에 `+1`을 적용하고, embedding index `0`을 filler token으로 사용한다.
@@ -144,6 +172,18 @@ blank_id 또는 filler_id는 F5 embedding id 0으로 매핑
 ```
 
 이 규칙은 `PosteriorTokenMap.f5_vocab_offset`, `blank_id`, `filler_id`에 저장된다.
+
+ASR token id를 F5 vocab id로 projection할 때는 `src/f5_tts/posterior/token_projection.py`의 helper를 기준으로 한다.
+
+```text
+blank_id 또는 filler_id -> -1
+out-of-range token id -> -1
+special token like <pad>, <s> -> -1
+CTC word delimiter "|" -> " "
+exact token lookup -> lowercase lookup -> unknown fallback
+```
+
+`-1`은 F5 hard text path에서 filler/padding id로 쓰이고, `TextEmbedding` 안에서 filler embedding index 0으로 처리된다.
 
 ## 사용 모드
 

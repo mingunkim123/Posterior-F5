@@ -18,4 +18,15 @@ checkpoints:
     path: ckpts/posterior_f5/latest/model_last.pt
     vocoder: vocos
     checkpoint_hash: ""
+    dataset: dev_small
+    git_commit: ""
     notes: local placeholder for the latest Posterior-F5 finetune
+
+  posterior_encoder_dev_latest:
+    model: F5TTS_v1_Base
+    path: ckpts/posterior_encoder/dev_latest/model_last.pt
+    vocoder: vocos
+    checkpoint_hash: ""
+    dataset: dev_small
+    git_commit: ""
+    notes: Stage 2 posterior encoder checkpoint slot; fill hash and commit after Step 101-106 training smoke.

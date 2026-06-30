@@ -1,21 +1,47 @@
 name: posterior_f5_baseline
+stage: stage1_minimum
+description: hard/oracle/length-only/soft-ctc baseline contract for the platform worker.
 manifest: manifests/dev_small.jsonl
-posterior_file: posterior_cache/dev_small.posterior.jsonl
-output_dir: eval_outputs/posterior_f5_baseline
+artifact_root: mlops_artifacts/runs
+posterior_file: posterior_cache/run.posterior.jsonl
+output_dir: mlops_artifacts/runs
 
 modes:
   - hard
+  - oracle
   - length_only
   - soft_ctc
 
+posterior:
+  run_extraction: true
+  whisper_model: openai/whisper-large-v3-turbo
+  ctc_model: facebook/wav2vec2-base-960h
+  ctc_top_k: 8
+  skip_whisper: false
+  language: en
+
 generation:
   model: F5TTS_v1_Base
-  nfe_step: 16
+  checkpoint_id: f5tts_v1_base_hf
+  checkpoint: hf://SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors
+  checkpoint_hash: hf:SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors
+  vocoder: vocos
+  nfe_step: 32
   cfg_strength: 2.0
   sway_sampling_coef: -1.0
   speed: 1.0
+  seed: 1234
+  run_inference: true
+  inference_dry_run: false
+  hard_ref_text_source: empty
 
 metrics:
-  asr_eval_model: whisper
+  run_prediction: true
+  prediction_dry_run: false
+  eval_asr: openai/whisper-large-v3-turbo
+  run_metrics: true
+  metrics_dry_run: false
   report_breakdown: true
   report_rtf: true
+  report_speaker_similarity: false
+  report_utmos: false

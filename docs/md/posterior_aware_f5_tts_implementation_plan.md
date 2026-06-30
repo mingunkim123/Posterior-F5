@@ -768,6 +768,16 @@ Step 64까지는 모델 아이디어를 검증할 수 있는 연구 scaffold가 
 | Step 71 | 없음 | dev smoke manifest와 dev small manifest를 실제 데이터 경로로 만든다. 대용량 데이터와 wav는 git에 넣지 않는다. | `wc -l manifests/dev_small.jsonl` |
 | Step 72 | `docs/md/experiment_protocol.md` | Stage 1 최소 실험 명령과 Stage 2 확장 실험 명령을 현재 파일명 기준으로 갱신한다. | 문서 diff 확인 |
 
+진행 기록:
+
+- Step 66: 기존 dirty file은 `src/f5_tts/infer/infer_cli.py`, `tests/test_soft_text_override_shapes.py`로 확인했고, A 섹션 작업에서는 건드리지 않는다.
+- Step 67: `platform/config/datasets.yaml`에 `dev_small`, `clean_test`, `noisy_test`, `accented_test`, `dysarthric_test` registry 계약을 추가했다.
+- Step 68: `platform/config/checkpoints.yaml`에 Stage 1 upstream F5 checkpoint와 Stage 2 posterior encoder checkpoint slot을 고정했다.
+- Step 69: `configs/eval/posterior_f5_baseline.yaml`을 `hard/oracle/length_only/soft_ctc` Stage 1 runner 계약으로 정리했다.
+- Step 70: `configs/eval/posterior_f5_full.yaml`에서 Stage 1 mode와 Stage 2 mode(`posterior_encoder`, `hybrid`)를 분리했다.
+- Step 71: `manifests/dev_small.jsonl`을 checked-in smoke/dev manifest로 추가했다. full split manifest와 wav/cache 산출물은 로컬 데이터로 유지한다.
+- Step 72: `docs/md/experiment_protocol.md`에 manifest contract, Stage 1 smoke/full, Stage 2 확장 실행 순서를 반영했다.
+
 ### B. Posterior cache 실제 검증
 
 | Step | 파일 | 작업 | 확인 |
@@ -779,6 +789,16 @@ Step 64까지는 모델 아이디어를 검증할 수 있는 연구 scaffold가 
 | Step 77 | `src/f5_tts/scripts/extract_asr_posterior.py` | real CTC extraction metadata에 top-k mass, duration, sample rate, entropy 계산 기준을 명시적으로 저장한다. | 1개 wav cache inspect |
 | Step 78 | 없음 | smoke/dev small reference audio로 실제 CTC posterior를 생성한다. | `inspect_posterior_cache.py` 통과 |
 | Step 79 | `docs/md/posterior_cache_format.md` | real CTC cache 생성/검사 명령과 token projection 규칙을 실제 구현 기준으로 갱신한다. | 문서 diff 확인 |
+
+진행 기록:
+
+- Step 73: `src/f5_tts/scripts/inspect_posterior_cache.py`를 추가했다. JSONL count, shard 존재, NPZ shape, top-k mass, blank id, expected length를 검사한다.
+- Step 74: `tests/test_inspect_posterior_cache.py`를 추가해 정상 shard, 누락 shard, shape mismatch, CLI failure path를 고정했다.
+- Step 75: `src/f5_tts/posterior/token_projection.py`를 추가해 ASR token id to F5 vocab id projection 규칙을 독립 helper로 분리했다. 기존 dirty 상태의 `infer_cli.py` refactor는 별도 정리 후 연결한다.
+- Step 76: `tests/test_token_projection.py`를 추가해 blank/filler/unknown/space/special token 규칙을 고정했다.
+- Step 77: `extract_asr_posterior.py`가 CTC shard metadata에 raw top-k mass와 entropy normalization 기준을 남기도록 보강했다.
+- Step 78: 이번 pass에서는 `--skip_whisper` lightweight cache를 inspect했다. 실제 CTC model 다운로드가 필요한 real top-k 생성은 GPU/ASR 환경에서 다음 실행 항목으로 남긴다.
+- Step 79: `docs/md/posterior_cache_format.md`에 inspect 명령, raw top-k probability space, token projection 규칙을 갱신했다.
 
 ### C. Platform runner 실험 실행화
 

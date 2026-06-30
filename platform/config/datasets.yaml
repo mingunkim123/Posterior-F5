@@ -16,3 +16,48 @@ datasets:
     subsets:
       - smoke
     notes: Uses the same sample manifest with all baseline modes enabled.
+
+  dev_small:
+    manifest: manifests/dev_small.jsonl
+    language: en
+    num_utterances: 1
+    purpose: Stage 1 development run contract
+    subsets:
+      - clean/dev_small
+    notes: Small checked-in manifest that points to the bundled F5-TTS example audio for config and worker smoke runs.
+
+  clean_test:
+    manifest: manifests/clean_test.jsonl
+    language: en
+    num_utterances: null
+    purpose: Stage 1 clean full evaluation
+    subsets:
+      - clean/test
+    notes: Local paper-eval manifest; populate outside git with fixed utterance ids before full runs.
+
+  noisy_test:
+    manifest: manifests/noisy_test.jsonl
+    language: en
+    num_utterances: null
+    purpose: Stage 1 noisy full evaluation
+    subsets:
+      - noisy/test
+    notes: Local paper-eval manifest; populate outside git with fixed utterance ids before full runs.
+
+  accented_test:
+    manifest: manifests/accented_test.jsonl
+    language: en
+    num_utterances: null
+    purpose: Stage 1 accented full evaluation
+    subsets:
+      - accented/test
+    notes: Local paper-eval manifest; populate outside git with fixed utterance ids before full runs.
+
+  dysarthric_test:
+    manifest: manifests/dysarthric_test.jsonl
+    language: en
+    num_utterances: null
+    purpose: Stage 1 dysarthric full evaluation
+    subsets:
+      - dysarthric/test
+    notes: Local paper-eval manifest; populate outside git with fixed utterance ids before full runs.

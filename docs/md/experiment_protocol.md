@@ -4,9 +4,36 @@
 
 이 실험은 ASR posterior-aware reference conditioning이 기존 F5-TTS hard 1-best reference transcript 의존성을 얼마나 줄이는지 검증한다.
 
-## Split
+## Manifest Contract
 
-권장 split:
+모든 실험 manifest는 JSONL 한 줄이 하나의 utterance가 되도록 고정한다.
+
+필수 필드:
+
+| 필드 | 의미 |
+| --- | --- |
+| `utterance_id` | posterior cache, wav, prediction, metric을 묶는 stable key |
+| `ref_audio` | reference prompt audio path |
+| `ref_text` | oracle prompt transcript. `oracle` ceiling과 posterior skip-whisper smoke에 사용 |
+| `gen_text` | 생성해야 할 target text |
+| `text` | evaluation ASR hypothesis와 비교할 target reference text |
+| `subset` | `clean/dev_small`, `clean/test`, `noisy/test`, `accented/test`, `dysarthric/test` 같은 분석 축 |
+| `language` | ASR language hint |
+
+예시:
+
+```json
+{"utterance_id":"utt-0001","ref_audio":"ref.wav","ref_text":"oracle prompt transcript","gen_text":"target text","text":"target text","subset":"accented/test","language":"en"}
+```
+
+현재 checked-in smoke/dev 계약:
+
+```text
+platform/samples/manifests/dev_smoke.jsonl
+manifests/dev_small.jsonl
+```
+
+대용량 full split manifest는 같은 schema로 로컬에 배치하고, wav와 cache 산출물은 git에 넣지 않는다.
 
 ```text
 clean/dev_small
@@ -16,25 +43,52 @@ accented/test
 dysarthric/test
 ```
 
-각 row는 최소한 아래 필드를 가진 JSONL로 둔다.
+Registry 기준 경로:
 
-```json
-{"utterance_id":"utt-0001","ref_audio":"ref.wav","ref_text":"oracle prompt transcript","gen_text":"target text","text":"evaluation reference text","subset":"accented"}
+```text
+platform/config/datasets.yaml
 ```
 
 ## 비교 모드
 
 | mode | 설명 |
 | --- | --- |
-| `hard` | 기존 F5-TTS hard reference transcript |
-| `oracle` | gold reference transcript ceiling |
+| `hard` | 기존 F5-TTS hard reference transcript. `ref_text`를 비워 ASR 1-best baseline으로 둔다. |
+| `oracle` | gold `ref_text`를 넣은 hard path ceiling |
 | `length_only` | posterior expected reference length만 사용 |
 | `soft_ctc` | CTC posterior expected embedding 사용 |
-| `posterior_encoder` | learned posterior encoder 사용 |
+| `posterior_encoder` | learned posterior encoder 사용. Stage 2에서 inference wiring 이후 평가 |
+| `hybrid` | soft text와 SSL fallback mix. Stage 2에서 real SSL cache wiring 이후 평가 |
+
+Stage 1 최소 논문 실험 mode:
+
+```text
+hard
+oracle
+length_only
+soft_ctc
+```
+
+Stage 2 확장 mode:
+
+```text
+posterior_encoder
+hybrid
+```
 
 ## ASR 분리 원칙
 
 posterior source ASR와 evaluation ASR는 분리한다. 예를 들어 posterior가 CTC model에서 나왔으면 WER/CER 평가에는 Whisper 계열을 쓰고, posterior가 Whisper에서 나왔으면 별도 CTC/Conformer 평가 모델로 교차 확인한다.
+
+Stage 1 기본 계약:
+
+| 역할 | 기본값 |
+| --- | --- |
+| posterior one-best | `openai/whisper-large-v3-turbo` |
+| posterior CTC top-k | `facebook/wav2vec2-base-960h` |
+| eval ASR | posterior CTC source와 분리된 Whisper 계열 |
+| checkpoint | `f5tts_v1_base_hf` |
+| seed | `1234` |
 
 ## Metric
 
@@ -93,9 +147,62 @@ subset | mode | oracle_gap_recovered | deletion_relative_reduction | notes
 
 ## 실행 순서
 
-1. `extract_asr_posterior.py`로 posterior cache 생성.
-2. `hard`, `oracle`, `length_only`, `soft_ctc` 출력 생성.
-3. evaluation ASR로 generated wav transcript 생성.
-4. `eval_posterior_f5.py`로 WER/CER/Sub/Del/Ins 집계.
-5. subset별 paired bootstrap으로 유의성 확인.
-6. 실패 case를 deletion, repetition, ASR entropy 기준으로 분해.
+### Stage 1 Smoke
+
+dry-run artifact 계약 확인:
+
+```bash
+PYTHONPATH=src .venv/bin/python platform/workers/run_posterior_f5_pipeline.py \
+  --run_id stage1_contract_smoke \
+  --manifest manifests/dev_small.jsonl \
+  --mode hard \
+  --mode oracle \
+  --mode length_only \
+  --mode soft_ctc \
+  --run_posterior_extraction \
+  --skip_whisper \
+  --run_inference \
+  --inference_dry_run \
+  --run_prediction \
+  --prediction_dry_run \
+  --run_metrics \
+  --fail_if_exists
+```
+
+GPU real wav smoke:
+
+```bash
+PYTHONPATH=src .venv/bin/python platform/workers/run_posterior_f5_pipeline.py \
+  --run_id stage1_real_wav_smoke \
+  --manifest manifests/dev_small.jsonl \
+  --mode hard \
+  --mode oracle \
+  --mode length_only \
+  --mode soft_ctc \
+  --run_posterior_extraction \
+  --ctc_model facebook/wav2vec2-base-960h \
+  --run_inference \
+  --run_prediction \
+  --run_metrics \
+  --infer_device cuda \
+  --asr_device cuda:0 \
+  --eval_device cuda:0 \
+  --fail_if_exists
+```
+
+### Stage 1 Full
+
+1. full split manifest를 `manifests/clean_test.jsonl`, `manifests/noisy_test.jsonl`, `manifests/accented_test.jsonl`, `manifests/dysarthric_test.jsonl` schema에 맞게 고정한다.
+2. 각 split에 대해 `hard`, `oracle`, `length_only`, `soft_ctc`를 같은 seed/checkpoint/posterior source로 실행한다.
+3. evaluation ASR로 generated wav transcript를 만든다.
+4. `eval_posterior_f5.py`로 WER/CER/Sub/Del/Ins를 집계한다.
+5. subset별 paired bootstrap으로 유의성을 확인한다.
+6. 실패 case를 deletion, repetition, ASR entropy 기준으로 분해한다.
+
+### Stage 2 확장
+
+Stage 1 결과를 freeze한 뒤 진행한다.
+
+1. `posterior_encoder` training loop와 inference mode를 연결한다.
+2. real SSL reference cache를 만들고 `hybrid`가 soft text와 SSL branch를 실제로 mix하게 한다.
+3. `soft_ctc` vs `posterior_encoder`, `soft_ctc` vs `hybrid` ablation을 같은 manifest와 seed로 추가 실행한다.
