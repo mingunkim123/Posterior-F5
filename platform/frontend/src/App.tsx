@@ -5,7 +5,6 @@ import {
   CheckCircle2,
   CircleDot,
   Database,
-  Download,
   FileAudio,
   GitBranch,
   ListFilter,
@@ -86,6 +85,100 @@ function statusIcon(status: string) {
 
 function stageLabel(name: string): string {
   return name.replace(/_/g, " ");
+}
+
+type ViewKey = "overview" | "launch" | "runs" | "results" | "logs" | "utterances";
+
+const viewLabels: Record<ViewKey, string> = {
+  overview: "Overview",
+  launch: "Launch",
+  runs: "Runs",
+  results: "Results",
+  logs: "Logs",
+  utterances: "Utterances",
+};
+
+function viewIcon(view: ViewKey) {
+  if (view === "overview") return <Activity size={17} />;
+  if (view === "launch") return <Play size={17} />;
+  if (view === "runs") return <ListFilter size={17} />;
+  if (view === "results") return <BarChart3 size={17} />;
+  if (view === "logs") return <Terminal size={17} />;
+  return <FileAudio size={17} />;
+}
+
+function SideNav({
+  activeView,
+  apiState,
+  onViewChange,
+  run,
+  runsCount,
+}: {
+  activeView: ViewKey;
+  apiState: "api" | "demo" | "loading";
+  onViewChange: (view: ViewKey) => void;
+  run?: Run;
+  runsCount: number;
+}) {
+  const views: ViewKey[] = ["overview", "launch", "runs", "results", "logs", "utterances"];
+  return (
+    <aside className="sideNav">
+      <div className="sideBrand">
+        <div className="brandMark"><GitBranch size={20} /></div>
+        <div>
+          <h1>Posterior-F5</h1>
+          <span>Ops</span>
+        </div>
+      </div>
+      <nav className="navMenu">
+        {views.map((view) => (
+          <button className={activeView === view ? "navItem active" : "navItem"} key={view} onClick={() => onViewChange(view)}>
+            {viewIcon(view)}
+            <span>{viewLabels[view]}</span>
+          </button>
+        ))}
+      </nav>
+      <div className="sideMeta">
+        <small>Selected</small>
+        <strong>{run?.run_id ?? "none"}</strong>
+        <em className={`pill status-${run?.status ?? "planned"}`}>{run?.status ?? "idle"}</em>
+      </div>
+      <div className="sideFooter">
+        <span className={apiState === "api" ? "apiBadge live" : "apiBadge"}>
+          <Server size={15} />
+          {apiState === "loading" ? "loading" : apiState}
+        </span>
+        <span className="runCount">{runsCount} runs</span>
+      </div>
+    </aside>
+  );
+}
+
+function RunSummary({ job, metrics, run, utterances }: { job?: RunJob; metrics: MetricRow[]; run?: Run; utterances: Utterance[] }) {
+  return (
+    <section className="summaryBand">
+      <div>
+        <small>Run</small>
+        <strong>{run?.run_id ?? "none"}</strong>
+      </div>
+      <div>
+        <small>Run status</small>
+        <strong>{run?.status ?? "idle"}</strong>
+      </div>
+      <div>
+        <small>Job status</small>
+        <strong>{job?.status ?? "idle"}</strong>
+      </div>
+      <div>
+        <small>Modes</small>
+        <strong>{run?.modes?.length ?? metrics.length}</strong>
+      </div>
+      <div>
+        <small>Utterances</small>
+        <strong>{utterances.length}</strong>
+      </div>
+    </section>
+  );
 }
 
 function PipelineGraph({ run }: { run?: Run }) {
@@ -442,6 +535,7 @@ function App() {
   const [job, setJob] = useState<RunJob | undefined>();
   const [logs, setLogs] = useState<RunLogs | undefined>();
   const [apiState, setApiState] = useState<"api" | "demo" | "loading">("loading");
+  const [activeView, setActiveView] = useState<ViewKey>("overview");
   const [notice, setNotice] = useState("");
 
   async function loadRunDetails(run: Run) {
@@ -513,6 +607,7 @@ function App() {
         await refresh();
         setNotice(`Started ${response.run_id ?? response.status}`);
       }
+      setActiveView("logs");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to start run";
       setNotice(message);
@@ -558,61 +653,83 @@ function App() {
     void refresh();
   }, []);
 
+  const pageMeta = selectedRun?.artifact_root ?? "mlops_artifacts/runs";
+
   return (
-    <main>
-      <header className="topbar">
-        <div className="brand">
-          <div className="brandMark"><GitBranch size={20} /></div>
-          <div>
-            <h1>Posterior-F5 Ops</h1>
-            <p>{selectedRun?.artifact_root ?? "mlops_artifacts/runs"}</p>
+    <div className="appShell">
+      <SideNav activeView={activeView} apiState={apiState} onViewChange={setActiveView} run={selectedRun} runsCount={runs.length} />
+      <main className="dashboardMain">
+        <header className="topbar">
+          <div className="pageTitle">
+            <span>{viewIcon(activeView)}</span>
+            <div>
+              <h1>{viewLabels[activeView]}</h1>
+              <p>{pageMeta}</p>
+            </div>
           </div>
-        </div>
-        <div className="toolbar">
-          <span className={apiState === "api" ? "apiBadge live" : "apiBadge"}>
-            <Server size={15} />
-            {apiState === "loading" ? "loading" : apiState}
-          </span>
-          <button className="iconButton" onClick={() => void refresh()} title="Refresh runs">
-            <RefreshCcw size={18} />
-          </button>
-          <button className="iconButton" title="Open artifacts">
-            <Download size={18} />
-          </button>
-        </div>
-      </header>
+          <div className="toolbar">
+            <span className={apiState === "api" ? "apiBadge live" : "apiBadge"}>
+              <Server size={15} />
+              {apiState === "loading" ? "loading" : apiState}
+            </span>
+            <button className="iconButton" onClick={() => void refresh()} title="Refresh runs">
+              <RefreshCcw size={18} />
+            </button>
+          </div>
+        </header>
 
-      <section className="summaryBand">
-        <div>
-          <small>Selected run</small>
-          <strong>{selectedRun?.run_id}</strong>
-        </div>
-        <div>
-          <small>Status</small>
-          <strong>{selectedRun?.status}</strong>
-        </div>
-        <div>
-          <small>Modes</small>
-          <strong>{selectedRun?.modes?.length ?? metrics.length}</strong>
-        </div>
-        <div>
-          <small>Utterances</small>
-          <strong>{utterances.length}</strong>
-        </div>
-      </section>
+        {activeView === "overview" ? (
+          <div className="dashboardGrid overviewGrid">
+            <RunSummary job={job} metrics={metrics} run={selectedRun} utterances={utterances} />
+            <PipelineGraph run={selectedRun} />
+            <MetricBars metrics={metrics} />
+            <JobLogs job={job} logs={logs} />
+          </div>
+        ) : null}
 
-      <div className="layout">
-        <RunList runs={runs} selectedRunId={selectedRun?.run_id} onSelect={(run) => void selectRun(run)} />
-        <PipelineGraph run={selectedRun} />
-        <MetricBars metrics={metrics} />
-        <RunLauncher apiState={apiState} onCreate={handleCreateRun} />
-        <FailureTable metrics={metrics} />
-        <JobLogs job={job} logs={logs} />
-        <UtteranceInspector utterances={utterances} runId={selectedRun?.run_id} />
-      </div>
+        {activeView === "launch" ? (
+          <div className="dashboardGrid launchGrid">
+            <RunLauncher apiState={apiState} onCreate={handleCreateRun} />
+            <RunList runs={runs} selectedRunId={selectedRun?.run_id} onSelect={(run) => void selectRun(run)} />
+          </div>
+        ) : null}
 
-      {notice ? <div className="toast">{notice}</div> : null}
-    </main>
+        {activeView === "runs" ? (
+          <div className="dashboardGrid runsGrid">
+            <RunList runs={runs} selectedRunId={selectedRun?.run_id} onSelect={(run) => void selectRun(run)} />
+            <div className="stack">
+              <RunSummary job={job} metrics={metrics} run={selectedRun} utterances={utterances} />
+              <PipelineGraph run={selectedRun} />
+            </div>
+          </div>
+        ) : null}
+
+        {activeView === "results" ? (
+          <div className="dashboardGrid resultsPageGrid">
+            <RunSummary job={job} metrics={metrics} run={selectedRun} utterances={utterances} />
+            <div className="resultsGrid">
+              <MetricBars metrics={metrics} />
+              <FailureTable metrics={metrics} />
+            </div>
+          </div>
+        ) : null}
+
+        {activeView === "logs" ? (
+          <div className="dashboardGrid logsGrid">
+            <PipelineGraph run={selectedRun} />
+            <JobLogs job={job} logs={logs} />
+          </div>
+        ) : null}
+
+        {activeView === "utterances" ? (
+          <div className="dashboardGrid utteranceGrid">
+            <UtteranceInspector utterances={utterances} runId={selectedRun?.run_id} />
+          </div>
+        ) : null}
+
+        {notice ? <div className="toast">{notice}</div> : null}
+      </main>
+    </div>
   );
 }
 

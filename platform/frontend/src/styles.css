@@ -27,10 +27,15 @@ button {
   font: inherit;
 }
 
-main {
-  width: min(1520px, 100%);
-  margin: 0 auto;
-  padding: 24px;
+.appShell {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  min-height: 100vh;
+}
+
+.dashboardMain {
+  min-width: 0;
+  padding: 26px 28px;
 }
 
 .topbar {
@@ -38,19 +43,30 @@ main {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 18px;
+  margin-bottom: 20px;
 }
 
-.brand,
+.pageTitle,
 .toolbar,
 .summaryBand {
   display: flex;
   align-items: center;
 }
 
-.brand {
+.pageTitle {
   gap: 12px;
   min-width: 0;
+}
+
+.pageTitle > span {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid #cdd7d8;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #244855;
 }
 
 .brandMark {
@@ -89,7 +105,7 @@ th {
   letter-spacing: 0;
 }
 
-.brand p,
+.pageTitle p,
 .panelHeader p {
   color: #687782;
   font-size: 13px;
@@ -100,9 +116,112 @@ th {
   gap: 8px;
 }
 
+.sideNav {
+  position: sticky;
+  top: 0;
+  display: grid;
+  grid-template-rows: auto 1fr auto auto;
+  gap: 18px;
+  height: 100vh;
+  border-right: 1px solid #d9e1e2;
+  padding: 18px 12px;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: 10px 0 34px rgba(31, 41, 51, 0.05);
+}
+
+.sideBrand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 4px 6px 10px;
+  border-bottom: 1px solid #e5ebec;
+}
+
+.sideBrand h1 {
+  overflow: hidden;
+  max-width: 150px;
+  font-size: 19px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sideBrand span {
+  color: #687782;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.navMenu {
+  display: grid;
+  align-content: start;
+  gap: 5px;
+}
+
+.navItem {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 11px;
+  background: transparent;
+  color: #465662;
+  cursor: pointer;
+  font-weight: 800;
+  text-align: left;
+}
+
+.navItem:hover,
+.navItem.active {
+  background: #1f2933;
+  color: #ffffff;
+}
+
+.sideMeta {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  border-top: 1px solid #e5ebec;
+  padding: 12px 6px 0;
+}
+
+.sideMeta small {
+  color: #687782;
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.sideMeta strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sideMeta .pill {
+  justify-self: start;
+}
+
+.sideFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 2px;
+}
+
+.runCount {
+  flex: 0 0 auto;
+  color: #687782;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .apiBadge,
-.iconButton,
-.floatingAction {
+.iconButton {
   border: 1px solid #c9d3d4;
   background: #ffffff;
   color: #244855;
@@ -157,12 +276,11 @@ th {
 
 .summaryBand {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 1px;
   overflow: hidden;
   border: 1px solid #cdd7d8;
   border-radius: 8px;
-  margin-bottom: 18px;
   background: #cdd7d8;
 }
 
@@ -187,11 +305,45 @@ th {
   white-space: nowrap;
 }
 
-.layout {
+.dashboardGrid {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr) 360px;
-  gap: 16px;
+  gap: 14px;
   align-items: start;
+}
+
+.overviewGrid {
+  grid-template-columns: minmax(0, 1.1fr) minmax(380px, 0.9fr);
+}
+
+.overviewGrid .summaryBand,
+.overviewGrid .pipeline {
+  grid-column: 1 / -1;
+}
+
+.launchGrid {
+  grid-template-columns: minmax(380px, 460px) minmax(0, 1fr);
+}
+
+.runsGrid {
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+}
+
+.resultsPageGrid {
+  grid-template-columns: 1fr;
+}
+
+.logsGrid {
+  grid-template-columns: minmax(0, 0.9fr) minmax(420px, 1.1fr);
+}
+
+.utteranceGrid {
+  grid-template-columns: 1fr;
+}
+
+.stack {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
 }
 
 .panel {
@@ -210,10 +362,6 @@ th {
   padding: 14px 16px;
   border-bottom: 1px solid #e1e7e8;
   color: #244855;
-}
-
-.runList {
-  grid-row: span 2;
 }
 
 .runRows,
@@ -304,7 +452,7 @@ th {
 
 .stageRail {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
   gap: 8px;
 }
 
@@ -338,10 +486,6 @@ th {
   color: #687782;
   font-size: 12px;
   margin-top: 4px;
-}
-
-.metricPanel {
-  grid-column: span 1;
 }
 
 .launcher {
@@ -523,6 +667,13 @@ th {
   min-height: 258px;
 }
 
+.resultsGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 12px;
+  align-items: start;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -547,11 +698,6 @@ th {
   text-transform: uppercase;
 }
 
-.logsPanel,
-.inspector {
-  grid-column: 1 / -1;
-}
-
 .jobMeta {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -574,7 +720,7 @@ th {
 .logFiles {
   display: grid;
   gap: 10px;
-  max-height: 420px;
+  max-height: calc(100vh - 254px);
   overflow: auto;
   padding: 12px;
 }
@@ -717,19 +863,45 @@ audio {
 }
 
 @media (max-width: 1120px) {
-  .layout {
-    grid-template-columns: 280px minmax(0, 1fr);
+  .appShell {
+    grid-template-columns: 210px minmax(0, 1fr);
   }
 
-  .compactPanel,
-  .logsPanel,
-  .inspector {
-    grid-column: 1 / -1;
+  .overviewGrid,
+  .launchGrid,
+  .runsGrid,
+  .logsGrid {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 760px) {
-  main {
+  .appShell {
+    grid-template-columns: 1fr;
+  }
+
+  .sideNav {
+    position: static;
+    grid-template-rows: auto auto auto;
+    height: auto;
+    border-right: 0;
+    border-bottom: 1px solid #d9e1e2;
+  }
+
+  .navMenu {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .navItem {
+    justify-content: flex-start;
+    padding: 0 8px;
+  }
+
+  .sideMeta {
+    display: none;
+  }
+
+  .dashboardMain {
     padding: 14px;
   }
 
@@ -739,19 +911,13 @@ audio {
   }
 
   .summaryBand,
-  .layout,
+  .dashboardGrid,
+  .resultsGrid,
   .stageRail,
   .jobMeta,
   .inspectorGrid,
   .audioGrid {
     grid-template-columns: 1fr;
-  }
-
-  .runList,
-  .metricPanel,
-  .compactPanel,
-  .inspector {
-    grid-column: 1;
   }
 
   .metricRow {
