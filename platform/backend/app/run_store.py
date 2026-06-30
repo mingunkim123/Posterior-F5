@@ -20,6 +20,9 @@ def repository_root() -> Path:
 
 
 def default_artifact_root(repo_root: Path | None = None) -> Path:
+    env_root = os.environ.get("MLOPS_ARTIFACT_ROOT")
+    if env_root:
+        return Path(env_root).expanduser()
     root = repo_root or repository_root()
     return root / "mlops_artifacts" / "runs"
 
@@ -863,7 +866,7 @@ def start_run(payload: dict[str, Any], *, artifact_root: Path | None = None) -> 
 
     command_payload = dict(payload)
     command_payload["fail_if_exists"] = False
-    command = build_pipeline_command(command_payload, artifact_root=artifact_root)
+    command = build_pipeline_command(command_payload, artifact_root=root)
     stdout_path = log_root / "job.stdout.log"
     stderr_path = log_root / "job.stderr.log"
     job_file = job_path(run_id, artifact_root=root)

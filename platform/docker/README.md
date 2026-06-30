@@ -56,6 +56,22 @@ docker compose up --build api frontend
 docker compose --profile lite up --build worker-lite
 ```
 
+For local development without Docker, or when an existing container owns
+`mlops_artifacts/`, point the API and file worker at a writable run root:
+
+```bash
+MLOPS_ARTIFACT_ROOT=/tmp/posterior-f5-dashboard-runs \
+  PYTHONPATH=platform/backend/app:src \
+  .venv/bin/python -m uvicorn main:app --app-dir platform/backend/app --host 127.0.0.1 --port 8001
+
+PYTHONPATH=platform/backend/app:src \
+  .venv/bin/python platform/workers/run_job_worker.py \
+  --artifact_root /tmp/posterior-f5-dashboard-runs --poll_interval 1.0
+
+cd platform/frontend
+VITE_API_BASE=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5174
+```
+
 To check the ML worker runtime after building:
 
 ```bash

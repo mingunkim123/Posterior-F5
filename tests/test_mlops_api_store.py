@@ -29,6 +29,28 @@ def _load_indexer():
     return module
 
 
+def test_default_artifact_root_can_use_env_override(tmp_path, monkeypatch):
+    run_store = _load_run_store()
+    override = tmp_path / "dashboard_runs"
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text('{"utterance_id":"utt-001","ref_audio":"ref.wav","text":"hello"}\n', encoding="utf-8")
+
+    monkeypatch.setenv("MLOPS_ARTIFACT_ROOT", str(override))
+
+    assert run_store.default_artifact_root() == override
+
+    response = run_store.start_run(
+        {
+            "run_id": "run_env_override",
+            "manifest": str(manifest),
+            "modes": ["hard"],
+        }
+    )
+    command = response["command"]
+    artifact_flag_index = command.index("--artifact_root")
+    assert Path(command[artifact_flag_index + 1]) == override
+
+
 def test_run_store_lists_runs_and_metrics(tmp_path):
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text('{"utterance_id":"utt-001","ref_audio":"ref.wav","text":"hello"}\n', encoding="utf-8")
