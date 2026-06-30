@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   BarChart3,
@@ -12,17 +12,25 @@ import {
   Play,
   RefreshCcw,
   Server,
+  Terminal,
   TriangleAlert,
 } from "lucide-react";
 import {
   MetricRow,
   Run,
+  RunCreatePayload,
+  RunJob,
+  RunLogs,
   Utterance,
   artifactUrl,
+  createRun,
   demoMetrics,
   demoRuns,
   demoUtterances,
   fetchMetrics,
+  fetchRun,
+  fetchRunJob,
+  fetchRunLogs,
   fetchRuns,
   fetchUtterances,
 } from "./api";
@@ -34,6 +42,29 @@ const modeColors: Record<string, string> = {
   soft_ctc: "#8d5fbf",
   hybrid: "#b8526b",
   posterior_encoder: "#587447",
+};
+
+const availableModes = ["hard", "oracle", "length_only", "soft_ctc", "posterior_encoder", "hybrid"];
+
+const defaultRunPayload: RunCreatePayload = {
+  project: "Posterior-F5",
+  experiment: "baseline_dev_small",
+  manifest: "data/dev_manifest.jsonl",
+  modes: ["hard", "oracle", "length_only", "soft_ctc"],
+  model: "F5TTS_v1_Base",
+  checkpoint: "",
+  vocoder: "vocos",
+  seed: 1234,
+  language: "en",
+  run_posterior_extraction: false,
+  skip_whisper: true,
+  run_inference: false,
+  inference_dry_run: true,
+  run_prediction: false,
+  prediction_dry_run: true,
+  run_metrics: false,
+  metrics_dry_run: false,
+  fail_if_exists: false,
 };
 
 function pct(value?: number | null): string {
@@ -155,6 +186,129 @@ function RunList({
   );
 }
 
+function RunLauncher({
+  apiState,
+  onCreate,
+}: {
+  apiState: "api" | "demo" | "loading";
+  onCreate: (payload: RunCreatePayload) => Promise<void>;
+}) {
+  const [payload, setPayload] = useState<RunCreatePayload>(defaultRunPayload);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  function setValue<K extends keyof RunCreatePayload>(key: K, value: RunCreatePayload[K]) {
+    setPayload((current) => ({ ...current, [key]: value }));
+  }
+
+  function toggleMode(mode: string) {
+    setPayload((current) => {
+      const modes = current.modes.includes(mode) ? current.modes.filter((item) => item !== mode) : [...current.modes, mode];
+      return { ...current, modes };
+    });
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsSubmitting(true);
+    try {
+      await onCreate({
+        ...payload,
+        run_id: payload.run_id?.trim() || undefined,
+        manifest: payload.manifest.trim(),
+        experiment: payload.experiment.trim(),
+      });
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  const disabled = isSubmitting || apiState !== "api";
+  return (
+    <section className="panel launcher">
+      <div className="panelHeader">
+        <div>
+          <h2>New Run</h2>
+          <p>{apiState === "demo" ? "API unavailable" : "Create local artifact run"}</p>
+        </div>
+        <Play size={20} />
+      </div>
+      <form className="runForm" onSubmit={(event) => void submit(event)}>
+        <label>
+          <span>Experiment</span>
+          <input value={payload.experiment} onChange={(event) => setValue("experiment", event.target.value)} required />
+        </label>
+        <label>
+          <span>Manifest</span>
+          <input value={payload.manifest} onChange={(event) => setValue("manifest", event.target.value)} required />
+        </label>
+        <label>
+          <span>Run ID</span>
+          <input placeholder="auto" value={payload.run_id ?? ""} onChange={(event) => setValue("run_id", event.target.value)} />
+        </label>
+        <div className="modePicker" aria-label="Modes">
+          {availableModes.map((mode) => (
+            <button className={payload.modes.includes(mode) ? "modeChoice active" : "modeChoice"} key={mode} type="button" onClick={() => toggleMode(mode)}>
+              <span className="modeSwatch" style={{ background: modeColors[mode] ?? "#607080" }} />
+              {mode}
+            </button>
+          ))}
+        </div>
+        <div className="toggleGrid">
+          <label className="checkRow">
+            <input checked={payload.run_posterior_extraction} type="checkbox" onChange={(event) => setValue("run_posterior_extraction", event.target.checked)} />
+            <span>Posterior</span>
+          </label>
+          <label className="checkRow">
+            <input checked={payload.run_inference} type="checkbox" onChange={(event) => setValue("run_inference", event.target.checked)} />
+            <span>Inference</span>
+          </label>
+          <label className="checkRow">
+            <input checked={payload.run_prediction} type="checkbox" onChange={(event) => setValue("run_prediction", event.target.checked)} />
+            <span>Prediction</span>
+          </label>
+          <label className="checkRow">
+            <input checked={payload.run_metrics} type="checkbox" onChange={(event) => setValue("run_metrics", event.target.checked)} />
+            <span>Metrics</span>
+          </label>
+        </div>
+        <div className="toggleGrid dryToggles">
+          <label className="checkRow">
+            <input checked={payload.skip_whisper} type="checkbox" onChange={(event) => setValue("skip_whisper", event.target.checked)} />
+            <span>Skip Whisper</span>
+          </label>
+          <label className="checkRow">
+            <input checked={payload.inference_dry_run} type="checkbox" onChange={(event) => setValue("inference_dry_run", event.target.checked)} />
+            <span>Inference dry</span>
+          </label>
+          <label className="checkRow">
+            <input checked={payload.prediction_dry_run} type="checkbox" onChange={(event) => setValue("prediction_dry_run", event.target.checked)} />
+            <span>Prediction dry</span>
+          </label>
+          <label className="checkRow">
+            <input checked={payload.fail_if_exists} type="checkbox" onChange={(event) => setValue("fail_if_exists", event.target.checked)} />
+            <span>Unique run</span>
+          </label>
+        </div>
+        <div className="formFooter">
+          <label>
+            <span>Seed</span>
+            <input
+              min="0"
+              type="number"
+              value={payload.seed}
+              onChange={(event) => setValue("seed", Number(event.target.value))}
+            />
+          </label>
+          <button className="primaryButton" disabled={disabled || payload.modes.length === 0} type="submit">
+            <Play size={16} />
+            <span>{isSubmitting ? "Starting" : "Start"}</span>
+          </button>
+        </div>
+      </form>
+    </section>
+  );
+}
+
 function UtteranceInspector({ utterances, runId }: { utterances: Utterance[]; runId?: string }) {
   const [selected, setSelected] = useState(0);
   const utterance = utterances[selected];
@@ -245,32 +399,90 @@ function FailureTable({ metrics }: { metrics: MetricRow[] }) {
   );
 }
 
+function JobLogs({ job, logs }: { job?: RunJob; logs?: RunLogs }) {
+  const files = logs?.files ?? [];
+  return (
+    <section className="panel logsPanel">
+      <div className="panelHeader">
+        <div>
+          <h2>Job Logs</h2>
+          <p>{job ? `${job.status}${job.pid ? ` pid ${job.pid}` : ""}` : "No job selected"}</p>
+        </div>
+        <Terminal size={20} />
+      </div>
+      <div className="jobMeta">
+        <span>{job?.started_at ?? "not started"}</span>
+        <span>{job?.finished_at ?? "waiting"}</span>
+        <span>{job?.exit_code ?? "exit n/a"}</span>
+      </div>
+      <div className="logFiles">
+        {files.length === 0 ? (
+          <pre>No logs yet.</pre>
+        ) : (
+          files.map((file) => (
+            <div className="logFile" key={file.path}>
+              <div>
+                <strong>{file.path}</strong>
+                <span>{file.size_bytes} bytes</span>
+              </div>
+              <pre>{file.content || "empty"}</pre>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
 function App() {
   const [runs, setRuns] = useState<Run[]>(demoRuns);
   const [selectedRun, setSelectedRun] = useState<Run | undefined>(demoRuns[0]);
   const [metrics, setMetrics] = useState<MetricRow[]>(demoMetrics.modes);
   const [utterances, setUtterances] = useState<Utterance[]>(demoUtterances);
+  const [job, setJob] = useState<RunJob | undefined>();
+  const [logs, setLogs] = useState<RunLogs | undefined>();
   const [apiState, setApiState] = useState<"api" | "demo" | "loading">("loading");
+  const [notice, setNotice] = useState("");
+
+  async function loadRunDetails(run: Run) {
+    const [loadedMetrics, loadedUtterances, loadedJob, loadedLogs] = await Promise.all([
+      fetchMetrics(run.run_id),
+      fetchUtterances(run.run_id),
+      fetchRunJob(run.run_id),
+      fetchRunLogs(run.run_id),
+    ]);
+    setMetrics(loadedMetrics.modes ?? []);
+    setUtterances(loadedUtterances);
+    setJob(loadedJob);
+    setLogs(loadedLogs);
+  }
 
   async function refresh() {
     setApiState("loading");
     try {
       const loadedRuns = await fetchRuns();
       if (loadedRuns.length === 0) {
-        throw new Error("No runs");
+        setRuns([]);
+        setSelectedRun(undefined);
+        setMetrics([]);
+        setUtterances([]);
+        setJob(undefined);
+        setLogs(undefined);
+        setApiState("api");
+        return;
       }
       const current = loadedRuns[0];
-      const [loadedMetrics, loadedUtterances] = await Promise.all([fetchMetrics(current.run_id), fetchUtterances(current.run_id)]);
       setRuns(loadedRuns);
       setSelectedRun(current);
-      setMetrics(loadedMetrics.modes ?? []);
-      setUtterances(loadedUtterances);
+      await loadRunDetails(current);
       setApiState("api");
     } catch {
       setRuns(demoRuns);
       setSelectedRun(demoRuns[0]);
       setMetrics(demoMetrics.modes);
       setUtterances(demoUtterances);
+      setJob(undefined);
+      setLogs(undefined);
       setApiState("demo");
     }
   }
@@ -278,16 +490,69 @@ function App() {
   async function selectRun(run: Run) {
     setSelectedRun(run);
     try {
-      const [loadedMetrics, loadedUtterances] = await Promise.all([fetchMetrics(run.run_id), fetchUtterances(run.run_id)]);
-      setMetrics(loadedMetrics.modes ?? []);
-      setUtterances(loadedUtterances);
+      await loadRunDetails(run);
       setApiState("api");
     } catch {
       setMetrics(demoMetrics.modes);
       setUtterances(demoUtterances);
+      setJob(undefined);
+      setLogs(undefined);
       setApiState("demo");
     }
   }
+
+  async function handleCreateRun(payload: RunCreatePayload) {
+    setNotice("");
+    try {
+      const response = await createRun(payload);
+      if (response.run) {
+        setRuns((current) => [response.run as Run, ...current.filter((run) => run.run_id !== response.run?.run_id)]);
+        await selectRun(response.run);
+        setNotice(`Started ${response.run.run_id}`);
+      } else {
+        await refresh();
+        setNotice(`Started ${response.run_id ?? response.status}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to start run";
+      setNotice(message);
+    }
+  }
+
+  useEffect(() => {
+    if (apiState !== "api" || !selectedRun) {
+      return;
+    }
+    const status = job?.status ?? selectedRun.status;
+    if (!["running", "submitted", "queued"].includes(status)) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      void (async () => {
+        try {
+          const [freshRun, freshJob, freshLogs] = await Promise.all([
+            fetchRun(selectedRun.run_id),
+            fetchRunJob(selectedRun.run_id),
+            fetchRunLogs(selectedRun.run_id),
+          ]);
+          setSelectedRun(freshRun);
+          setRuns((current) => current.map((run) => (run.run_id === freshRun.run_id ? freshRun : run)));
+          setJob(freshJob);
+          setLogs(freshLogs);
+          if (!["running", "submitted", "queued"].includes(freshJob.status)) {
+            const [loadedMetrics, loadedUtterances] = await Promise.all([fetchMetrics(freshRun.run_id), fetchUtterances(freshRun.run_id)]);
+            setMetrics(loadedMetrics.modes ?? []);
+            setUtterances(loadedUtterances);
+          }
+        } catch {
+          setNotice("Polling failed");
+        }
+      })();
+    }, 2000);
+
+    return () => window.clearInterval(interval);
+  }, [apiState, selectedRun?.run_id, selectedRun?.status, job?.status]);
 
   useEffect(() => {
     void refresh();
@@ -340,14 +605,13 @@ function App() {
         <RunList runs={runs} selectedRunId={selectedRun?.run_id} onSelect={(run) => void selectRun(run)} />
         <PipelineGraph run={selectedRun} />
         <MetricBars metrics={metrics} />
+        <RunLauncher apiState={apiState} onCreate={handleCreateRun} />
         <FailureTable metrics={metrics} />
+        <JobLogs job={job} logs={logs} />
         <UtteranceInspector utterances={utterances} runId={selectedRun?.run_id} />
       </div>
 
-      <button className="floatingAction" title="Start planned run">
-        <Play size={18} />
-        <span>Run</span>
-      </button>
+      {notice ? <div className="toast">{notice}</div> : null}
     </main>
   );
 }

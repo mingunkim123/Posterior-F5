@@ -49,6 +49,64 @@ export type Utterance = {
   modes: Record<string, UtteranceMode>;
 };
 
+export type RunCreatePayload = {
+  run_id?: string;
+  project: string;
+  experiment: string;
+  manifest: string;
+  modes: string[];
+  model: string;
+  checkpoint?: string;
+  vocoder: string;
+  seed: number;
+  language: string;
+  run_posterior_extraction: boolean;
+  skip_whisper: boolean;
+  run_inference: boolean;
+  inference_dry_run: boolean;
+  run_prediction: boolean;
+  prediction_dry_run: boolean;
+  run_metrics: boolean;
+  metrics_dry_run: boolean;
+  fail_if_exists: boolean;
+};
+
+export type RunCreateResponse = {
+  status: string;
+  run_id?: string;
+  exit_code: number | null;
+  command: string[];
+  stdout: string;
+  stderr: string;
+  job?: RunJob;
+  run?: Run;
+};
+
+export type RunJob = {
+  run_id: string;
+  status: string;
+  pid?: number | null;
+  command?: string[];
+  started_at?: string;
+  finished_at?: string;
+  exit_code?: number | null;
+  stdout_log?: string;
+  stderr_log?: string;
+  error_message?: string;
+  run?: Run;
+};
+
+export type RunLogFile = {
+  path: string;
+  size_bytes: number;
+  content: string;
+};
+
+export type RunLogs = {
+  run_id: string;
+  files: RunLogFile[];
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
 
 async function getJson<T>(path: string): Promise<T> {
@@ -59,8 +117,37 @@ async function getJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function postJson<T>(path: string, payload: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `${response.status} ${response.statusText}`);
+  }
+  return response.json() as Promise<T>;
+}
+
 export async function fetchRuns(): Promise<Run[]> {
   return getJson<Run[]>("/runs");
+}
+
+export async function fetchRun(runId: string): Promise<Run> {
+  return getJson<Run>(`/runs/${encodeURIComponent(runId)}`);
+}
+
+export async function createRun(payload: RunCreatePayload): Promise<RunCreateResponse> {
+  return postJson<RunCreateResponse>("/runs", payload);
+}
+
+export async function fetchRunJob(runId: string): Promise<RunJob> {
+  return getJson<RunJob>(`/runs/${encodeURIComponent(runId)}/job`);
+}
+
+export async function fetchRunLogs(runId: string): Promise<RunLogs> {
+  return getJson<RunLogs>(`/runs/${encodeURIComponent(runId)}/logs`);
 }
 
 export async function fetchMetrics(runId: string): Promise<MetricsSummary> {

@@ -10,7 +10,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from run_store import list_runs, load_run, load_run_metrics, load_run_utterances, start_run
+from run_store import (
+    list_runs,
+    load_run,
+    load_run_job,
+    load_run_logs,
+    load_run_metrics,
+    load_run_utterances,
+    start_run,
+)
 
 
 class RunCreateRequest(BaseModel):
@@ -66,6 +74,18 @@ def get_run(run_id: str) -> dict[str, Any]:
     try:
         return load_run(run_id)
     except FileNotFoundError as exc:
+        job = load_run_job(run_id)
+        if job["status"] != "unknown":
+            return {
+                "run_id": run_id,
+                "status": job["status"],
+                "project": job.get("project"),
+                "experiment": job.get("experiment"),
+                "created_at": job.get("started_at"),
+                "updated_at": job.get("finished_at") or job.get("started_at"),
+                "modes": job.get("modes", []),
+                "stages": [{"name": "job", "status": job["status"]}],
+            }
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
@@ -92,7 +112,9 @@ def get_run_metrics(run_id: str) -> dict[str, Any]:
     try:
         load_run(run_id)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        job = load_run_job(run_id)
+        if job["status"] == "unknown":
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     return load_run_metrics(run_id)
 
 
@@ -101,8 +123,39 @@ def get_run_utterances(run_id: str) -> list[dict[str, Any]]:
     try:
         load_run(run_id)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        job = load_run_job(run_id)
+        if job["status"] == "unknown":
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
     return load_run_utterances(run_id)
+
+
+@app.get("/runs/{run_id}/job")
+def get_run_job(run_id: str) -> dict[str, Any]:
+    job = load_run_job(run_id)
+    if job["status"] == "unknown":
+        try:
+            run = load_run(run_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "run_id": run_id,
+            "status": run.get("status", "unknown"),
+            "run": run,
+            "stdout_log": "logs/job.stdout.log",
+            "stderr_log": "logs/job.stderr.log",
+        }
+    return job
+
+
+@app.get("/runs/{run_id}/logs")
+def get_run_logs(run_id: str) -> dict[str, Any]:
+    try:
+        load_run(run_id)
+    except FileNotFoundError as exc:
+        job = load_run_job(run_id)
+        if job["status"] == "unknown":
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return load_run_logs(run_id)
 
 
 @app.get("/artifacts/{run_id}/{artifact_path:path}")

@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -73,3 +74,41 @@ def test_run_store_builds_pipeline_command(tmp_path):
     assert command.count("--mode") == 2
     assert "--run_posterior_extraction" in command
     assert "--inference_dry_run" in command
+
+
+def test_run_store_starts_job_and_collects_logs(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text('{"utterance_id":"utt-001","ref_audio":"ref.wav","text":"hello"}\n', encoding="utf-8")
+
+    run_store = _load_run_store()
+    response = run_store.start_run(
+        {
+            "run_id": "run_async_job",
+            "project": "Posterior-F5",
+            "experiment": "async_job",
+            "manifest": str(manifest),
+            "modes": ["hard"],
+            "run_posterior_extraction": False,
+            "run_inference": False,
+            "run_prediction": False,
+            "run_metrics": False,
+        },
+        artifact_root=tmp_path / "runs",
+    )
+
+    assert response["status"] == "submitted"
+    assert response["run_id"] == "run_async_job"
+
+    job = {}
+    for _ in range(50):
+        job = run_store.load_run_job("run_async_job", artifact_root=tmp_path / "runs")
+        if job["status"] != "running":
+            break
+        time.sleep(0.1)
+
+    run = run_store.load_run("run_async_job", artifact_root=tmp_path / "runs")
+    logs = run_store.load_run_logs("run_async_job", artifact_root=tmp_path / "runs")
+
+    assert job["status"] == "completed"
+    assert run["status"] == "completed"
+    assert {item["path"] for item in logs["files"]} == {"logs/job.stderr.log", "logs/job.stdout.log"}
