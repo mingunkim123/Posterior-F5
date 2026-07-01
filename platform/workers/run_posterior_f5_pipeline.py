@@ -73,7 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--hard_ref_text_source",
         choices=["empty", "manifest"],
-        default="empty",
+        default="manifest",
         help="Use empty ref_text for hard ASR baseline, or manifest ref_text for a cheap smoke run.",
     )
     parser.add_argument("--infer_device", default=None, help="Device passed to infer_cli.py, e.g. cuda, mps, or cpu.")
@@ -103,6 +103,12 @@ def parse_args() -> argparse.Namespace:
         "--metrics_dry_run",
         action="store_true",
         help="Write planned metric artifacts without executing eval_posterior_f5.py.",
+    )
+    parser.add_argument(
+        "--metrics_normalizer",
+        default="paper",
+        choices=["paper", "lowercase", "none"],
+        help="Text normalization profile for WER/CER.",
     )
     parser.add_argument("--language", default="en")
     parser.add_argument("--ctc_top_k", type=int, default=8)
@@ -181,6 +187,8 @@ def apply_config(args: argparse.Namespace, config: dict[str, Any]) -> None:
         "eval_asr": "eval_asr",
         "run_metrics": "run_metrics",
         "metrics_dry_run": "metrics_dry_run",
+        "normalizer": "metrics_normalizer",
+        "metrics_normalizer": "metrics_normalizer",
     }
     for source, target in metrics_map.items():
         if source in metrics:
@@ -491,6 +499,7 @@ def build_run_payload(
             "prediction_dry_run": args.prediction_dry_run,
             "run_metrics": args.run_metrics,
             "metrics_dry_run": args.metrics_dry_run,
+            "normalizer": args.metrics_normalizer,
         },
         "git": git,
         "stages": stages,
@@ -962,14 +971,20 @@ def numeric_metric_row(metrics: dict[str, Any]) -> dict[str, Any]:
         "num_utterances": metrics.get("num_utterances", 0),
         "wer": metrics.get("wer"),
         "cer": metrics.get("cer"),
+        "prediction_coverage": metrics.get("prediction_coverage"),
+        "normalizer": metrics.get("normalizer"),
         "wer_substitutions": metrics.get("wer_substitutions", 0),
         "wer_deletions": metrics.get("wer_deletions", 0),
         "wer_insertions": metrics.get("wer_insertions", 0),
         "wer_reference_length": metrics.get("wer_reference_length", 0),
+        "wer_deletion_rate": metrics.get("wer_deletion_rate"),
+        "wer_insertion_rate": metrics.get("wer_insertion_rate"),
+        "wer_substitution_rate": metrics.get("wer_substitution_rate"),
         "cer_substitutions": metrics.get("cer_substitutions", 0),
         "cer_deletions": metrics.get("cer_deletions", 0),
         "cer_insertions": metrics.get("cer_insertions", 0),
         "cer_reference_length": metrics.get("cer_reference_length", 0),
+        "generation_elapsed_sec_mean": metrics.get("generation_elapsed_sec_mean"),
     }
 
 
@@ -987,14 +1002,20 @@ def write_summary_files(run_root: Path, metrics_by_mode: list[dict[str, Any]]) -
         "num_utterances",
         "wer",
         "cer",
+        "prediction_coverage",
+        "normalizer",
         "wer_substitutions",
         "wer_deletions",
         "wer_insertions",
         "wer_reference_length",
+        "wer_deletion_rate",
+        "wer_insertion_rate",
+        "wer_substitution_rate",
         "cer_substitutions",
         "cer_deletions",
         "cer_insertions",
         "cer_reference_length",
+        "generation_elapsed_sec_mean",
     ]
     with summary_csv.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
@@ -1040,6 +1061,8 @@ def run_metrics_stage(
             str(per_utterance_path),
             "--mode",
             mode,
+            "--normalizer",
+            args.metrics_normalizer,
             "--posterior_file",
             str(posterior_file) if posterior_file.exists() else "",
         ]
@@ -1054,6 +1077,7 @@ def run_metrics_stage(
                 "wer": None,
                 "cer": None,
                 "posterior_file": str(posterior_file) if posterior_file.exists() else "",
+                "normalizer": args.metrics_normalizer,
             }
             write_json(output_path, metrics)
             per_utterance_path.write_text("", encoding="utf-8")
@@ -1068,6 +1092,7 @@ def run_metrics_stage(
                     "num_utterances": 0,
                     "wer": None,
                     "cer": None,
+                    "normalizer": args.metrics_normalizer,
                 }
                 write_json(output_path, metrics)
                 log_path.write_text(metrics["error_message"], encoding="utf-8")
@@ -1102,6 +1127,7 @@ def run_metrics_stage(
                         "num_utterances": 0,
                         "wer": None,
                         "cer": None,
+                        "normalizer": args.metrics_normalizer,
                     }
                     write_json(output_path, metrics)
                     mode_status = "failed"

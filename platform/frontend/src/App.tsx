@@ -1,26 +1,44 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { Fragment, type FormEvent, type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   Activity,
+  ArrowRight,
+  AudioLines,
+  BadgeCheck,
   BarChart3,
   CheckCircle2,
+  Circle,
+  CircleDashed,
   CircleDot,
   Clipboard,
+  Clock,
+  Compass,
   Database,
   Download,
   FileAudio,
+  FlaskConical,
+  FolderInput,
+  Gauge,
   GitBranch,
   ListFilter,
+  Loader2,
+  PackageCheck,
   Play,
   RefreshCcw,
+  Rocket,
   Server,
+  Sparkles,
+  Target,
   Terminal,
+  TrendingDown,
   TriangleAlert,
 } from "lucide-react";
 import {
   Checkpoint,
   CompareRow,
   Dataset,
+  EvaluationReport,
   MetricRow,
+  ModelCard,
   Run,
   RunCreatePayload,
   RunJob,
@@ -30,11 +48,13 @@ import {
   Utterance,
   artifactUrl,
   createRun,
+  fetchEvaluationReport,
   experimentExportUrl,
   fetchCheckpoints,
   fetchCompare,
   fetchDatasets,
   fetchMetrics,
+  fetchModels,
   fetchRun,
   fetchRunEvents,
   fetchRunJob,
@@ -51,6 +71,8 @@ import {
   demoUtterances,
   fallbackCheckpoints,
   fallbackDatasets,
+  fallbackEvaluationReport,
+  fallbackModelRegistry,
 } from "./demo";
 
 const modeColors: Record<string, string> = {
@@ -78,6 +100,7 @@ const defaultRunPayload: RunCreatePayload = {
   vocoder: "vocos",
   seed: 1234,
   language: "en",
+  hard_ref_text_source: "manifest",
   run_posterior_extraction: false,
   skip_whisper: true,
   run_inference: false,
@@ -86,19 +109,22 @@ const defaultRunPayload: RunCreatePayload = {
   prediction_dry_run: true,
   run_metrics: false,
   metrics_dry_run: false,
+  metrics_normalizer: "paper",
   fail_if_exists: false,
 };
 
 type RunPreset = {
   key: string;
   label: string;
+  summary: string;
   payload: Partial<RunCreatePayload>;
 };
 
 const runPresets: RunPreset[] = [
   {
     key: "scaffold_only",
-    label: "scaffold_only",
+    label: "골격만 생성",
+    summary: "데이터 로드만 — 실행 디렉터리와 설정을 만듭니다.",
     payload: {
       experiment: "scaffold_only_smoke",
       manifest: sampleManifest,
@@ -115,7 +141,8 @@ const runPresets: RunPreset[] = [
   },
   {
     key: "posterior_text_only",
-    label: "posterior_text_only",
+    label: "Posterior 준비",
+    summary: "데이터 로드 + posterior 신호 추출까지 진행합니다.",
     payload: {
       experiment: "posterior_text_smoke",
       manifest: sampleManifest,
@@ -132,7 +159,8 @@ const runPresets: RunPreset[] = [
   },
   {
     key: "dry_inference_plan",
-    label: "dry_inference_plan",
+    label: "음성 생성 계획",
+    summary: "모드별 음성 생성 명령을 계획(dry-run)으로 준비합니다.",
     payload: {
       experiment: "dry_inference_plan",
       manifest: sampleManifest,
@@ -149,7 +177,8 @@ const runPresets: RunPreset[] = [
   },
   {
     key: "metrics_dry_run",
-    label: "metrics_dry_run",
+    label: "평가까지 한 번에",
+    summary: "데이터 → 생성(계획) → 평가까지 전체 흐름을 실행합니다.",
     payload: {
       experiment: "metrics_dry_run",
       manifest: sampleManifest,
@@ -173,14 +202,30 @@ function pct(value?: number | null): string {
   return `${(value * 100).toFixed(1)}%`;
 }
 
-function statusIcon(status: string) {
-  if (status === "succeeded" || status === "completed") {
-    return <CheckCircle2 size={16} />;
+function compactNumber(value?: number | null, digits = 2): string {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "n/a";
   }
-  if (status === "failed") {
-    return <TriangleAlert size={16} />;
-  }
-  return <CircleDot size={16} />;
+  return value.toFixed(digits);
+}
+
+function metricCount(value?: number | null): string {
+  if (value === null || value === undefined) return "0";
+  return Intl.NumberFormat().format(value);
+}
+
+function shortTime(value?: string): string {
+  if (!value) return "";
+  return value.replace("T", " ").slice(0, 16);
+}
+
+function statusGlyph(status: string | undefined, size = 16): ReactNode {
+  if (status === "succeeded" || status === "completed") return <CheckCircle2 size={size} />;
+  if (status === "failed") return <TriangleAlert size={size} />;
+  if (status === "running" || status === "submitted") return <Loader2 className="spin" size={size} />;
+  if (status === "queued") return <Clock size={size} />;
+  if (status === "planned") return <CircleDashed size={size} />;
+  return <CircleDot size={size} />;
 }
 
 function statusLabel(status?: string, dryRun?: boolean): string {
@@ -188,6 +233,8 @@ function statusLabel(status?: string, dryRun?: boolean): string {
   if (status === "succeeded" || status === "completed") return "완료";
   if (status === "failed") return "실패";
   if (status === "running") return "실행 중";
+  if (status === "cancelling") return "취소 중";
+  if (status === "cancelled") return "취소됨";
   if (status === "queued") return "대기 중";
   if (status === "submitted") return "제출됨";
   if (status === "planned") return "예정";
@@ -220,26 +267,183 @@ function stageMeta(name: string): string {
   return labels[name] ?? "stage";
 }
 
-type ViewKey = "overview" | "launch" | "runs" | "results" | "compare" | "logs" | "utterances";
+// ---------------------------------------------------------------------------
+// Lifecycle phase model: group the technical stages into the 3 macro phases
+// the operator actually thinks in — 데이터 로드 → 모델 음성 생성 → 모델 평가.
+// ---------------------------------------------------------------------------
+
+type PhaseKey = "data" | "model" | "eval";
+type PhaseStatus = "succeeded" | "partial" | "running" | "failed" | "planned" | "pending";
+
+type PhaseDef = {
+  key: PhaseKey;
+  label: string;
+  sub: string;
+  hint: string;
+  stageNames: string[];
+  icon: (size: number) => ReactNode;
+};
+
+const PHASES: PhaseDef[] = [
+  {
+    key: "data",
+    label: "데이터 로드",
+    sub: "manifest · posterior",
+    hint: "참조 음성·텍스트를 불러오고 posterior 신호를 준비합니다.",
+    stageNames: ["queued", "job", "scaffold", "posterior_extraction"],
+    icon: (size) => <FolderInput size={size} />,
+  },
+  {
+    key: "model",
+    label: "모델 음성 생성",
+    sub: "F5-TTS inference",
+    hint: "선택한 mode별로 F5-TTS 모델이 음성을 생성합니다.",
+    stageNames: ["inference"],
+    icon: (size) => <AudioLines size={size} />,
+  },
+  {
+    key: "eval",
+    label: "모델 평가",
+    sub: "ASR · WER / CER",
+    hint: "생성 음성을 ASR로 전사하고 정확도를 점수화합니다.",
+    stageNames: ["prediction", "metrics"],
+    icon: (size) => <Gauge size={size} />,
+  },
+];
+
+type PhaseState = {
+  def: PhaseDef;
+  status: PhaseStatus;
+  stages: Array<{ stage: Stage; key: string }>;
+  doneCount: number;
+  totalCount: number;
+};
+
+function isDoneStatus(status: string): boolean {
+  return status === "succeeded" || status === "completed";
+}
+
+function derivePhases(run?: Run): PhaseState[] {
+  const stages = run?.stages ?? [];
+  const indexed = stages.map((stage, index) => ({ stage, key: stageKey(stage, index) }));
+  return PHASES.map((def) => {
+    const present = indexed.filter((item) => def.stageNames.includes(item.stage.name));
+    let status: PhaseStatus;
+    if (present.length === 0) {
+      status = "pending";
+    } else if (present.some((item) => item.stage.status === "failed")) {
+      status = "failed";
+    } else if (present.some((item) => ["running", "submitted", "queued", "cancelling"].includes(item.stage.status))) {
+      status = "running";
+    } else if (present.every((item) => isDoneStatus(item.stage.status))) {
+      status = "succeeded";
+    } else if (present.every((item) => item.stage.status === "planned")) {
+      status = "planned";
+    } else {
+      status = "partial";
+    }
+    const doneCount = present.filter((item) => isDoneStatus(item.stage.status) || item.stage.status === "planned").length;
+    return { def, status, stages: present, doneCount, totalCount: present.length };
+  });
+}
+
+function phaseStatusLabel(status: PhaseStatus): string {
+  const labels: Record<PhaseStatus, string> = {
+    succeeded: "완료",
+    partial: "부분 완료",
+    running: "진행 중",
+    failed: "실패",
+    planned: "계획만",
+    pending: "대기",
+  };
+  return labels[status];
+}
+
+function phaseGlyph(status: PhaseStatus, size = 16): ReactNode {
+  if (status === "succeeded") return <CheckCircle2 size={size} />;
+  if (status === "partial") return <Activity size={size} />;
+  if (status === "running") return <Loader2 className="spin" size={size} />;
+  if (status === "failed") return <TriangleAlert size={size} />;
+  if (status === "planned") return <CircleDashed size={size} />;
+  return <Circle size={size} />;
+}
+
+type RunMetricSummary = { bestWer: number | null; bestMode?: string };
+
+function buildRunMetrics(rows: CompareRow[]): Record<string, RunMetricSummary> {
+  const map: Record<string, RunMetricSummary> = {};
+  for (const row of rows) {
+    const current = map[row.run_id] ?? { bestWer: null };
+    if (typeof row.wer === "number" && (current.bestWer === null || row.wer < current.bestWer)) {
+      current.bestWer = row.wer;
+      current.bestMode = row.mode ?? undefined;
+    }
+    map[row.run_id] = current;
+  }
+  return map;
+}
+
+function bestMetric(metrics: MetricRow[]): RunMetricSummary {
+  let bestWer: number | null = null;
+  let bestMode: string | undefined;
+  for (const metric of metrics) {
+    if (typeof metric.wer === "number" && (bestWer === null || metric.wer < bestWer)) {
+      bestWer = metric.wer;
+      bestMode = metric.mode;
+    }
+  }
+  return { bestWer, bestMode };
+}
+
+type ViewKey = "overview" | "launch" | "runs" | "models" | "evaluation" | "results" | "compare" | "logs" | "utterances";
 
 const viewLabels: Record<ViewKey, string> = {
   overview: "개요",
   launch: "실험 시작",
   runs: "실험 기록",
+  models: "모델 관리",
+  evaluation: "평가 센터",
   results: "결과 분석",
   compare: "비교 분석",
   logs: "실행 로그",
   utterances: "샘플 검토",
 };
 
-function viewIcon(view: ViewKey) {
-  if (view === "overview") return <Activity size={17} />;
-  if (view === "launch") return <Play size={17} />;
-  if (view === "runs") return <ListFilter size={17} />;
-  if (view === "results") return <BarChart3 size={17} />;
-  if (view === "compare") return <Database size={17} />;
-  if (view === "logs") return <Terminal size={17} />;
-  return <FileAudio size={17} />;
+const viewDescriptions: Record<ViewKey, string> = {
+  overview: "지금 무엇을 해야 하는지와 실험 진행 흐름을 한눈에",
+  launch: "데이터셋·mode를 골라 새 실험을 실행",
+  runs: "실험별 진행 상태와 남은 결과",
+  models: "checkpoint registry와 검증 결과를 함께 관리",
+  evaluation: "품질 gate, leaderboard, 실패 분해",
+  results: "선택한 실험의 WER / CER 분석",
+  compare: "실험·mode 간 정량 비교",
+  logs: "단계별 명령과 실시간 로그",
+  utterances: "생성 음성과 전사 결과 청취",
+};
+
+function viewIcon(view: ViewKey, size = 17): ReactNode {
+  if (view === "overview") return <Compass size={size} />;
+  if (view === "launch") return <Rocket size={size} />;
+  if (view === "runs") return <ListFilter size={size} />;
+  if (view === "models") return <PackageCheck size={size} />;
+  if (view === "evaluation") return <Target size={size} />;
+  if (view === "results") return <BarChart3 size={size} />;
+  if (view === "compare") return <Database size={size} />;
+  if (view === "logs") return <Terminal size={size} />;
+  return <FileAudio size={size} />;
+}
+
+const navGroups: Array<{ title: string; views: ViewKey[] }> = [
+  { title: "워크플로", views: ["overview", "launch"] },
+  { title: "실험", views: ["runs", "models", "evaluation", "results", "compare"] },
+  { title: "진단", views: ["logs", "utterances"] },
+];
+
+const viewKeys: ViewKey[] = ["overview", "launch", "runs", "models", "evaluation", "results", "compare", "logs", "utterances"];
+
+function readViewFromHash(): ViewKey | undefined {
+  const raw = window.location.hash.replace(/^#\/?/, "");
+  return (viewKeys as string[]).includes(raw) ? (raw as ViewKey) : undefined;
 }
 
 function stageKey(stage: Stage, index: number): string {
@@ -298,33 +502,41 @@ function SideNav({
   run?: Run;
   runsCount: number;
 }) {
-  const views: ViewKey[] = ["overview", "launch", "runs", "results", "compare", "logs", "utterances"];
   return (
     <aside className="sideNav">
       <div className="sideBrand">
         <div className="brandMark"><GitBranch size={20} /></div>
         <div>
           <h1>Posterior-F5</h1>
-          <span>Ops</span>
+          <span>Ops Console</span>
         </div>
       </div>
       <nav className="navMenu">
-        {views.map((view) => (
-          <button className={activeView === view ? "navItem active" : "navItem"} key={view} onClick={() => onViewChange(view)}>
-            {viewIcon(view)}
-            <span>{viewLabels[view]}</span>
-          </button>
+        {navGroups.map((group) => (
+          <div className="navGroup" key={group.title}>
+            <small className="navGroupTitle">{group.title}</small>
+            {group.views.map((view) => (
+              <button
+                className={activeView === view ? "navItem active" : "navItem"}
+                key={view}
+                onClick={() => onViewChange(view)}
+              >
+                {viewIcon(view)}
+                <span>{viewLabels[view]}</span>
+              </button>
+            ))}
+          </div>
         ))}
       </nav>
       <div className="sideMeta">
         <small>선택된 실험</small>
         <strong>{run?.run_id ?? "none"}</strong>
-        <em className={`pill status-${run?.status ?? "planned"}`}>{statusLabel(run?.status)}</em>
+        <em className={`pill status-${run?.status ?? "planned"}`}>{statusGlyph(run?.status, 12)}{statusLabel(run?.status)}</em>
       </div>
       <div className="sideFooter">
         <span className={apiState === "api" ? "apiBadge live" : "apiBadge"}>
           <Server size={15} />
-          {apiState === "loading" ? "loading" : apiState}
+          {apiState === "loading" ? "연결 중" : apiState === "api" ? "연결됨" : "데모"}
         </span>
         <span className="runCount">{runsCount} runs</span>
       </div>
@@ -332,29 +544,235 @@ function SideNav({
   );
 }
 
-function RunSummary({ job, metrics, run, utterances }: { job?: RunJob; metrics: MetricRow[]; run?: Run; utterances: Utterance[] }) {
+type NextActionModel = {
+  tone: "info" | "success" | "warning" | "danger" | "neutral";
+  eyebrow: string;
+  title: string;
+  body: string;
+  icon: ReactNode;
+  cta?: { label: string; icon: ReactNode; onClick: () => void };
+  secondary?: { label: string; onClick: () => void };
+};
+
+function computeNextAction(params: {
+  run?: Run;
+  job?: RunJob;
+  metrics: MetricRow[];
+  runsCount: number;
+  apiState: "api" | "demo" | "loading";
+  best: RunMetricSummary;
+  goTo: (view: ViewKey) => void;
+  onRetry: () => void;
+}): NextActionModel {
+  const { run, job, metrics, runsCount, apiState, best, goTo, onRetry } = params;
+
+  if (apiState === "demo") {
+    return {
+      tone: "warning",
+      eyebrow: "데모 모드",
+      title: "API 서버에 연결되어 있지 않습니다",
+      body: "지금 보이는 값은 예시 데이터입니다. 백엔드(uvicorn)를 실행하고 새로고침하면 실제 실험을 제어할 수 있습니다.",
+      icon: <Server size={26} />,
+      cta: { label: "실험 시작 화면", icon: <Play size={16} />, onClick: () => goTo("launch") },
+    };
+  }
+
+  if (!run || runsCount === 0) {
+    return {
+      tone: "info",
+      eyebrow: "시작하기",
+      title: "첫 실험을 시작하세요",
+      body: "데이터셋과 mode를 고르고 ‘실험 시작’을 누르면 데이터 로드 → 음성 생성 → 평가 파이프라인이 순서대로 실행됩니다.",
+      icon: <Rocket size={26} />,
+      cta: { label: "실험 시작", icon: <Play size={16} />, onClick: () => goTo("launch") },
+    };
+  }
+
+  const status = job?.status ?? run.status;
+
+  if (["failed", "cancelled", "cancelling"].includes(status)) {
+    return {
+      tone: "danger",
+      eyebrow: "조치 필요",
+      title: "실험이 중단되었습니다",
+      body: run.error_message || job?.error_message || "실패한 단계의 로그를 확인한 뒤 재시도하세요.",
+      icon: <TriangleAlert size={26} />,
+      cta: { label: "재시도", icon: <RefreshCcw size={16} />, onClick: onRetry },
+      secondary: { label: "로그 보기", onClick: () => goTo("logs") },
+    };
+  }
+
+  if (["queued", "submitted", "running"].includes(status)) {
+    return {
+      tone: "info",
+      eyebrow: "진행 중",
+      title: "실험이 실행되고 있습니다",
+      body: "단계가 끝나면 결과가 자동으로 갱신됩니다. 실시간 로그로 진행 상황을 확인하세요.",
+      icon: <Loader2 className="spin" size={26} />,
+      cta: { label: "실시간 로그", icon: <Terminal size={16} />, onClick: () => goTo("logs") },
+    };
+  }
+
+  if (metrics.length > 0) {
+    const werText =
+      best.bestWer != null
+        ? `최고 성능은 ${best.bestMode} mode (WER ${pct(best.bestWer)})입니다.`
+        : "평가 점수가 준비되었습니다.";
+    return {
+      tone: "success",
+      eyebrow: "결과 준비 완료",
+      title: "실험이 완료되어 결과가 있습니다",
+      body: `${werText} 결과 분석과 비교 화면에서 mode별 품질을 확인하세요.`,
+      icon: <Sparkles size={26} />,
+      cta: { label: "결과 분석", icon: <BarChart3 size={16} />, onClick: () => goTo("results") },
+      secondary: { label: "실험 비교", onClick: () => goTo("compare") },
+    };
+  }
+
+  return {
+    tone: "neutral",
+    eyebrow: "다음 단계",
+    title: "파이프라인 골격이 준비되었습니다",
+    body: "아직 평가 점수가 없습니다. 음성 생성과 평가 단계를 켜고 새 실험을 실행하면 WER / CER 결과를 얻을 수 있습니다.",
+    icon: <Compass size={26} />,
+    cta: { label: "실험 구성", icon: <Play size={16} />, onClick: () => goTo("launch") },
+    secondary: { label: "진행 흐름 보기", onClick: () => goTo("runs") },
+  };
+}
+
+function NextActionCard({ action }: { action: NextActionModel }) {
   return (
-    <section className="summaryBand">
-      <div>
-        <small>현재 실험</small>
-        <strong>{run?.run_id ?? "none"}</strong>
+    <section className={`panel nextAction tone-${action.tone}`}>
+      <div className="nextActionMain">
+        <div className="nextActionGlyph">{action.icon}</div>
+        <div className="nextActionText">
+          <small>{action.eyebrow}</small>
+          <h2>{action.title}</h2>
+          <p>{action.body}</p>
+        </div>
       </div>
-      <div>
-        <small>실험 상태</small>
-        <strong>{statusLabel(run?.status)}</strong>
+      {action.cta || action.secondary ? (
+        <div className="nextActionButtons">
+          {action.cta ? (
+            <button className="nextActionPrimary" onClick={action.cta.onClick} type="button">
+              {action.cta.icon}
+              <span>{action.cta.label}</span>
+              <ArrowRight size={16} />
+            </button>
+          ) : null}
+          {action.secondary ? (
+            <button className="nextActionSecondary" onClick={action.secondary.onClick} type="button">
+              {action.secondary.label}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function LifecycleTracker({
+  run,
+  onSelectStage,
+  selectedStageKey,
+}: {
+  run?: Run;
+  onSelectStage?: (stage: Stage, key: string) => void;
+  selectedStageKey?: string;
+}) {
+  const phases = useMemo(() => derivePhases(run), [run]);
+  return (
+    <section className="panel lifecyclePanel">
+      <div className="panelHeader">
+        <div>
+          <h2>실험 진행 흐름</h2>
+          <p>데이터 로드 → 모델 음성 생성 → 모델 평가</p>
+        </div>
+        <Activity size={20} />
       </div>
-      <div>
-        <small>작업 상태</small>
-        <strong>{statusLabel(job?.status)}</strong>
+      <div className="lifecycleRail">
+        {phases.map((phase, index) => (
+          <Fragment key={phase.def.key}>
+            <div className={`phaseCard phase-${phase.status}`}>
+              <div className="phaseTop">
+                <span className="phaseIcon">{phase.def.icon(20)}</span>
+                <div className="phaseTitle">
+                  <strong>{phase.def.label}</strong>
+                  <span>{phase.def.sub}</span>
+                </div>
+                <em className={`phasePill phase-${phase.status}`}>
+                  {phaseGlyph(phase.status, 13)}
+                  {phaseStatusLabel(phase.status)}
+                </em>
+              </div>
+              <p className="phaseHint">{phase.def.hint}</p>
+              <div className="phaseStages">
+                {phase.stages.length === 0 ? (
+                  <span className="phaseEmpty">아직 실행되지 않음</span>
+                ) : (
+                  phase.stages.map(({ stage, key }) => (
+                    <button
+                      className={selectedStageKey === key ? `stageChip status-${stage.status} active` : `stageChip status-${stage.status}`}
+                      key={key}
+                      onClick={() => onSelectStage?.(stage, key)}
+                      type="button"
+                    >
+                      {statusGlyph(stage.status, 13)}
+                      <span>{stageLabel(stage.name)}</span>
+                      <em>{statusLabel(stage.status, stage.dry_run)}</em>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+            {index < phases.length - 1 ? (
+              <div className="phaseConnector">
+                <ArrowRight size={18} />
+              </div>
+            ) : null}
+          </Fragment>
+        ))}
       </div>
-      <div>
-        <small>모드</small>
-        <strong>{run?.modes?.length ?? metrics.length}</strong>
-      </div>
-      <div>
-        <small>샘플</small>
-        <strong>{utterances.length}</strong>
-      </div>
+    </section>
+  );
+}
+
+function StatStrip({
+  run,
+  job,
+  metrics,
+  utterances,
+  phases,
+  best,
+}: {
+  run?: Run;
+  job?: RunJob;
+  metrics: MetricRow[];
+  utterances: Utterance[];
+  phases: PhaseState[];
+  best: RunMetricSummary;
+}) {
+  const phasesDone = phases.filter((phase) => ["succeeded", "planned", "partial"].includes(phase.status)).length;
+  const effectiveStatus = job?.status ?? run?.status;
+  const stats: Array<{ icon: ReactNode; label: string; value: string }> = [
+    { icon: <FlaskConical size={16} />, label: "실험", value: run?.experiment ?? "—" },
+    { icon: statusGlyph(effectiveStatus, 16), label: "상태", value: statusLabel(effectiveStatus) },
+    { icon: <Compass size={16} />, label: "진행", value: `${phasesDone} / ${phases.length} 단계` },
+    { icon: <AudioLines size={16} />, label: "모드", value: String(run?.modes?.length ?? metrics.length ?? 0) },
+    { icon: <Gauge size={16} />, label: "최고 WER", value: best.bestWer != null ? pct(best.bestWer) : "n/a" },
+    { icon: <FileAudio size={16} />, label: "샘플", value: String(utterances.length) },
+  ];
+  return (
+    <section className="statStrip">
+      {stats.map((stat) => (
+        <div className="statCard" key={stat.label}>
+          <span className="statIcon">{stat.icon}</span>
+          <div>
+            <small>{stat.label}</small>
+            <strong>{stat.value}</strong>
+          </div>
+        </div>
+      ))}
     </section>
   );
 }
@@ -387,11 +805,11 @@ function RunHeader({
     <section className="panel runHeaderPanel">
       <div className="runHeaderMain">
         <div>
-          <small>Run</small>
-          <h2>{run?.run_id ?? "No run selected"}</h2>
+          <small>현재 실험 · 산출물</small>
+          <h2>{run?.run_id ?? "선택된 실험 없음"}</h2>
           <p>{run?.experiment ?? "experiment"} · {checkpointLabel(run)}</p>
         </div>
-        <em className={`pill status-${run?.status ?? "planned"}`}>{statusLabel(run?.status)}</em>
+        <em className={`pill status-${run?.status ?? "planned"}`}>{statusGlyph(run?.status, 13)}{statusLabel(run?.status)}</em>
       </div>
       {error ? (
         <div className="errorBanner">
@@ -402,11 +820,11 @@ function RunHeader({
       <div className="runMetaGrid">
         <div>
           <small>Created</small>
-          <strong>{run?.created_at ?? "n/a"}</strong>
+          <strong>{shortTime(run?.created_at) || "n/a"}</strong>
         </div>
         <div>
           <small>Updated</small>
-          <strong>{run?.updated_at ?? job?.finished_at ?? "n/a"}</strong>
+          <strong>{shortTime(run?.updated_at ?? job?.finished_at) || "n/a"}</strong>
         </div>
         <div>
           <small>Job</small>
@@ -419,13 +837,13 @@ function RunHeader({
       </div>
       <div className="artifactLinks">
         <button className="artifactAction" disabled={!canCancel} onClick={() => onAction?.("cancel")} type="button">
-          Cancel
+          중단
         </button>
         <button className="artifactAction" disabled={!canRetry} onClick={() => onAction?.("retry")} type="button">
-          Retry
+          재시도
         </button>
         <button className="artifactAction" disabled={!canRetry} onClick={() => onAction?.("resume")} type="button">
-          Resume
+          이어서
         </button>
         {artifacts.map((artifact) => {
           return artifact.href && artifact.available ? (
@@ -456,8 +874,8 @@ function PipelineGraph({
     <section className="panel pipeline">
       <div className="panelHeader">
         <div>
-          <h2>실험 진행 상태</h2>
-          <p>{run?.run_id ?? "No run selected"}</p>
+          <h2>단계별 상태</h2>
+          <p>{run?.run_id ?? "선택된 실험 없음"}</p>
         </div>
         <Activity size={20} />
       </div>
@@ -465,19 +883,19 @@ function PipelineGraph({
         {stages.map((stage, index) => {
           const key = stageKey(stage, index);
           return (
-          <button
-            className={selectedStageKey === key ? "stageNode active" : "stageNode"}
-            key={key}
-            onClick={() => onSelectStage?.(stage, key)}
-            type="button"
-          >
-            <div className={`stageDot status-${stage.status}`}>{statusIcon(stage.status)}</div>
-            <div>
-              <strong>{stageLabel(stage.name)}</strong>
-              <span>{stageMeta(stage.name)}</span>
-              <em>{statusLabel(stage.status, stage.dry_run)}</em>
-            </div>
-          </button>
+            <button
+              className={selectedStageKey === key ? "stageNode active" : "stageNode"}
+              key={key}
+              onClick={() => onSelectStage?.(stage, key)}
+              type="button"
+            >
+              <div className={`stageDot status-${stage.status}`}>{statusGlyph(stage.status)}</div>
+              <div>
+                <strong>{stageLabel(stage.name)}</strong>
+                <span>{stageMeta(stage.name)}</span>
+                <em>{statusLabel(stage.status, stage.dry_run)}</em>
+              </div>
+            </button>
           );
         })}
       </div>
@@ -488,37 +906,43 @@ function PipelineGraph({
 function MetricBars({ metrics }: { metrics: MetricRow[] }) {
   const maxWer = Math.max(0.01, ...metrics.map((item) => item.wer ?? 0));
   const maxCer = Math.max(0.01, ...metrics.map((item) => item.cer ?? 0));
+  const best = bestMetric(metrics);
   return (
     <section className="panel metricPanel">
       <div className="panelHeader">
         <div>
           <h2>품질 지표</h2>
-          <p>mode별 WER / CER</p>
+          <p>mode별 WER / CER · 낮을수록 좋음</p>
         </div>
         <BarChart3 size={20} />
       </div>
       <div className="metricRows">
-        {metrics.map((item) => (
-          <div className="metricRow" key={item.mode}>
-            <div className="metricName">
-              <span className="modeSwatch" style={{ background: modeColors[item.mode] ?? "#607080" }} />
-              <strong>{item.mode}</strong>
-              <small>{item.num_utterances ?? 0} utt</small>
-            </div>
-            <div className="bars">
-              <div className="barTrack" title={`WER ${pct(item.wer)}`}>
-                <span style={{ width: `${Math.max(4, ((item.wer ?? 0) / maxWer) * 100)}%`, background: modeColors[item.mode] ?? "#607080" }} />
+        {metrics.length === 0 ? (
+          <span className="emptyText">아직 평가 결과가 없습니다.</span>
+        ) : (
+          metrics.map((item) => (
+            <div className={item.mode === best.bestMode ? "metricRow best" : "metricRow"} key={item.mode}>
+              <div className="metricName">
+                <span className="modeSwatch" style={{ background: modeColors[item.mode] ?? "#607080" }} />
+                <strong>{item.mode}</strong>
+                {item.mode === best.bestMode ? <span className="bestBadge">최저</span> : null}
+                <small>{item.num_utterances ?? 0} utt</small>
               </div>
-              <div className="barTrack muted" title={`CER ${pct(item.cer)}`}>
-                <span style={{ width: `${Math.max(4, ((item.cer ?? 0) / maxCer) * 100)}%`, background: modeColors[item.mode] ?? "#607080" }} />
+              <div className="bars">
+                <div className="barTrack" title={`WER ${pct(item.wer)}`}>
+                  <span style={{ width: `${Math.max(4, ((item.wer ?? 0) / maxWer) * 100)}%`, background: modeColors[item.mode] ?? "#607080" }} />
+                </div>
+                <div className="barTrack muted" title={`CER ${pct(item.cer)}`}>
+                  <span style={{ width: `${Math.max(4, ((item.cer ?? 0) / maxCer) * 100)}%`, background: modeColors[item.mode] ?? "#607080" }} />
+                </div>
+              </div>
+              <div className="metricNumbers">
+                <span>{pct(item.wer)}</span>
+                <span>{pct(item.cer)}</span>
               </div>
             </div>
-            <div className="metricNumbers">
-              <span>{pct(item.wer)}</span>
-              <span>{pct(item.cer)}</span>
-            </div>
-          </div>
-        ))}
+          ))
+        )}
       </div>
     </section>
   );
@@ -528,30 +952,58 @@ function RunList({
   runs,
   selectedRunId,
   onSelect,
+  runMetrics,
+  title,
 }: {
   runs: Run[];
   selectedRunId?: string;
   onSelect: (run: Run) => void;
+  runMetrics: Record<string, RunMetricSummary>;
+  title?: string;
 }) {
   return (
     <section className="panel runList">
       <div className="panelHeader">
         <div>
-          <h2>실험 기록</h2>
-          <p>{runs.length} runs</p>
+          <h2>{title ?? "실험 기록"}</h2>
+          <p>{runs.length} runs · 진행 단계와 최고 WER</p>
         </div>
         <ListFilter size={20} />
       </div>
       <div className="runRows">
-        {runs.map((run) => (
-          <button className={run.run_id === selectedRunId ? "runRow active" : "runRow"} key={run.run_id} onClick={() => onSelect(run)}>
-            <span>
-              <strong>{run.run_id}</strong>
-              <small>{run.experiment ?? "experiment"}</small>
-            </span>
-            <em className={`pill status-${run.status}`}>{statusLabel(run.status)}</em>
-          </button>
-        ))}
+        {runs.length === 0 ? (
+          <span className="emptyText">아직 실험이 없습니다.</span>
+        ) : (
+          runs.map((run) => {
+            const phases = derivePhases(run);
+            const summary = runMetrics[run.run_id];
+            return (
+              <button
+                className={run.run_id === selectedRunId ? "runRow active" : "runRow"}
+                key={run.run_id}
+                onClick={() => onSelect(run)}
+              >
+                <span className="runRowMain">
+                  <strong>{run.run_id}</strong>
+                  <small>{run.experiment ?? "experiment"}{run.updated_at ? ` · ${shortTime(run.updated_at)}` : ""}</small>
+                </span>
+                <span className="runRowProgress" aria-hidden>
+                  {phases.map((phase) => (
+                    <i
+                      className={`phaseDot phase-${phase.status}`}
+                      key={phase.def.key}
+                      title={`${phase.def.label}: ${phaseStatusLabel(phase.status)}`}
+                    />
+                  ))}
+                </span>
+                <span className="runRowMeta">
+                  {summary?.bestWer != null ? <em className="werTag">WER {pct(summary.bestWer)}</em> : null}
+                  <em className={`pill status-${run.status}`}>{statusLabel(run.status)}</em>
+                </span>
+              </button>
+            );
+          })
+        )}
       </div>
     </section>
   );
@@ -635,16 +1087,21 @@ function RunLauncher({
   }
 
   const disabled = isSubmitting || apiState !== "api";
+  const activePresetSummary = runPresets.find((preset) => preset.key === activePreset)?.summary;
   return (
     <section className="panel launcher">
       <div className="panelHeader">
         <div>
           <h2>실험 시작</h2>
-          <p>{apiState === "demo" ? "API unavailable" : "local artifact run"}</p>
+          <p>{apiState === "demo" ? "API 연결 필요" : "데이터 로드 → 음성 생성 → 평가"}</p>
         </div>
-        <Play size={20} />
+        <Rocket size={20} />
       </div>
       <form className="runForm" onSubmit={(event) => void submit(event)}>
+        <div className="presetIntro">
+          <strong>1. 시작 프리셋</strong>
+          <span>{activePresetSummary ?? "세부 설정을 직접 조정했습니다."}</span>
+        </div>
         <div className="presetPicker" aria-label="Run presets">
           {runPresets.map((preset) => (
             <button
@@ -657,6 +1114,7 @@ function RunLauncher({
             </button>
           ))}
         </div>
+        <div className="formSectionTitle">2. 데이터와 모델</div>
         <label>
           <span>실험 이름</span>
           <input value={payload.experiment} onChange={(event) => setValue("experiment", event.target.value)} required />
@@ -694,6 +1152,7 @@ function RunLauncher({
           <span>Run ID</span>
           <input placeholder="auto" value={payload.run_id ?? ""} onChange={(event) => setValue("run_id", event.target.value)} />
         </label>
+        <div className="formSectionTitle">3. 비교할 mode</div>
         <div className="modePicker" aria-label="Modes">
           {availableModes.map((mode) => (
             <button className={payload.modes.includes(mode) ? "modeChoice active" : "modeChoice"} key={mode} type="button" onClick={() => toggleMode(mode)}>
@@ -702,6 +1161,7 @@ function RunLauncher({
             </button>
           ))}
         </div>
+        <div className="formSectionTitle">4. 실행할 단계</div>
         <div className="toggleGrid">
           <label className="checkRow">
             <input checked={payload.run_posterior_extraction} type="checkbox" onChange={(event) => setValue("run_posterior_extraction", event.target.checked)} />
@@ -720,6 +1180,22 @@ function RunLauncher({
             <span>점수 계산</span>
           </label>
         </div>
+        <div className="formSectionTitle">5. 안전 옵션</div>
+        <label>
+          <span>Metric normalizer</span>
+          <select value={payload.metrics_normalizer} onChange={(event) => setValue("metrics_normalizer", event.target.value)}>
+            <option value="paper">paper</option>
+            <option value="lowercase">lowercase</option>
+            <option value="none">none</option>
+          </select>
+        </label>
+        <label>
+          <span>Hard ref text</span>
+          <select value={payload.hard_ref_text_source} onChange={(event) => setValue("hard_ref_text_source", event.target.value)}>
+            <option value="manifest">manifest</option>
+            <option value="empty">empty ASR baseline</option>
+          </select>
+        </label>
         <div className="toggleGrid dryToggles">
           <label className="checkRow">
             <input checked={payload.skip_whisper} type="checkbox" onChange={(event) => setValue("skip_whisper", event.target.checked)} />
@@ -750,7 +1226,7 @@ function RunLauncher({
           </label>
           <button className="primaryButton" disabled={disabled || payload.modes.length === 0} type="submit">
             <Play size={16} />
-            <span>{isSubmitting ? "Starting" : "실험 시작"}</span>
+            <span>{isSubmitting ? "시작 중" : "실험 시작"}</span>
           </button>
         </div>
       </form>
@@ -827,7 +1303,7 @@ function UtteranceInspector({ utterances, runId }: { utterances: Utterance[]; ru
                   <div>
                     <span className="modeSwatch" style={{ background: modeColors[mode] ?? "#607080" }} />
                     <strong>{mode}</strong>
-                    <em>{modeData?.status ?? "n/a"}</em>
+                    <em>{modeData?.status ?? "n/a"} · WER {pct(modeData?.wer)}</em>
                   </div>
                   {src ? <audio controls src={src} /> : <span className="audioPlaceholder">no wav</span>}
                   <small>prediction</small>
@@ -887,6 +1363,289 @@ function FailureTable({ metrics }: { metrics: MetricRow[] }) {
         </tbody>
       </table>
     </section>
+  );
+}
+
+function MetricContractPanel({ metrics }: { metrics: MetricRow[] }) {
+  const normalizers = [...new Set(metrics.map((item) => item.normalizer).filter(Boolean).map(String))];
+  const coverage = metrics
+    .map((item) => item.prediction_coverage)
+    .filter((value): value is number => typeof value === "number");
+  const deletionRates = metrics
+    .map((item) => item.wer_deletion_rate)
+    .filter((value): value is number => typeof value === "number");
+  const latency = metrics
+    .map((item) => item.generation_elapsed_sec_mean)
+    .filter((value): value is number => typeof value === "number");
+  const minCoverage = coverage.length > 0 ? Math.min(...coverage) : null;
+  const maxDeletion = deletionRates.length > 0 ? Math.max(...deletionRates) : null;
+  const meanLatency = latency.length > 0 ? latency.reduce((sum, value) => sum + value, 0) / latency.length : null;
+  const rows = [
+    { label: "Normalizer", value: normalizers.join(", ") || "n/a", icon: <BadgeCheck size={16} /> },
+    { label: "Coverage", value: pct(minCoverage), icon: <Target size={16} /> },
+    { label: "Max deletion", value: pct(maxDeletion), icon: <TrendingDown size={16} /> },
+    { label: "Mean gen sec", value: compactNumber(meanLatency), icon: <Clock size={16} /> },
+  ];
+  return (
+    <section className="panel contractPanel">
+      <div className="panelHeader">
+        <div>
+          <h2>평가 계약</h2>
+          <p>normalization · coverage · latency</p>
+        </div>
+        <BadgeCheck size={20} />
+      </div>
+      <div className="contractGrid">
+        {rows.map((row) => (
+          <div className="contractItem" key={row.label}>
+            <span>{row.icon}</span>
+            <small>{row.label}</small>
+            <strong>{row.value}</strong>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function gateLabel(name: string): string {
+  const labels: Record<string, string> = {
+    best_wer: "Best WER",
+    best_cer: "Best CER",
+    prediction_coverage: "Coverage",
+    deletion_rate: "Deletion",
+  };
+  return labels[name] ?? name.replace(/_/g, " ");
+}
+
+function QualityGatePanel({ report }: { report: EvaluationReport }) {
+  return (
+    <section className="panel gatePanel">
+      <div className="panelHeader">
+        <div>
+          <h2>품질 Gate</h2>
+          <p>{report.evaluated_runs} evaluated runs · {report.evaluated_rows} rows</p>
+        </div>
+        <Target size={20} />
+      </div>
+      <div className="gateGrid">
+        {report.quality_gates.length === 0 ? (
+          <span className="emptyText">No gates</span>
+        ) : (
+          report.quality_gates.map((gate) => (
+            <div className={`gateItem gate-${gate.status}`} key={gate.name}>
+              <div>
+                <strong>{gateLabel(gate.name)}</strong>
+                <em>{gate.status}</em>
+              </div>
+              <span>{pct(gate.value)}</span>
+              <small>{gate.direction === "lower" ? "≤" : "≥"} {pct(gate.target)}</small>
+            </div>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function FailureMixPanel({ report }: { report: EvaluationReport }) {
+  const entries = [
+    { key: "substitutions", label: "Sub", color: "#8d5fbf" },
+    { key: "deletions", label: "Del", color: "#b8526b" },
+    { key: "insertions", label: "Ins", color: "#b07d2f" },
+  ];
+  return (
+    <section className="panel failureMixPanel">
+      <div className="panelHeader">
+        <div>
+          <h2>실패 분포</h2>
+          <p>word-level aggregate</p>
+        </div>
+        <Database size={20} />
+      </div>
+      <div className="failureBars">
+        {entries.map((entry) => (
+          <div className="failureBarRow" key={entry.key}>
+            <div>
+              <strong>{entry.label}</strong>
+              <span>{metricCount(report.failure_mix?.[entry.key])}</span>
+            </div>
+            <div className="barTrack">
+              <span style={{ width: `${Math.max(2, (report.failure_rates?.[entry.key] ?? 0) * 100)}%`, background: entry.color }} />
+            </div>
+            <em>{pct(report.failure_rates?.[entry.key])}</em>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function LeaderboardTable({
+  rows,
+  runs,
+  onSelectRun,
+}: {
+  rows: CompareRow[];
+  runs: Run[];
+  onSelectRun: (run: Run) => void;
+}) {
+  function selectRun(runId: string) {
+    const run = runs.find((item) => item.run_id === runId);
+    if (run) onSelectRun(run);
+  }
+  return (
+    <section className="panel leaderboardPanel">
+      <div className="panelHeader">
+        <div>
+          <h2>Leaderboard</h2>
+          <p>{rows.length} ranked mode rows</p>
+        </div>
+        <BarChart3 size={20} />
+      </div>
+      <div className="tableScroller">
+        <table className="compareTable">
+          <thead>
+            <tr>
+              <th>Rank</th>
+              <th>Run</th>
+              <th>Mode</th>
+              <th>WER</th>
+              <th>CER</th>
+              <th>Coverage</th>
+              <th>Del</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr><td colSpan={7}>No ranked rows</td></tr>
+            ) : (
+              rows.map((row, index) => (
+                <tr key={`${row.run_id}-${row.mode}-${row.subset ?? "all"}-${index}`}>
+                  <td>{index + 1}</td>
+                  <td>
+                    <button className="tableLink" type="button" onClick={() => selectRun(row.run_id)}>
+                      {row.run_id}
+                    </button>
+                  </td>
+                  <td>
+                    <span className="modeCell">
+                      <span className="modeSwatch" style={{ background: modeColors[row.mode ?? ""] ?? "#607080" }} />
+                      {row.mode ?? "mode"}
+                    </span>
+                  </td>
+                  <td>{pct(row.wer)}</td>
+                  <td>{pct(row.cer)}</td>
+                  <td>{pct(row.prediction_coverage)}</td>
+                  <td>{pct(row.wer_deletion_rate)}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+function ModelRegistryPage({
+  models,
+  runs,
+  onSelectRun,
+}: {
+  models: ModelCard[];
+  runs: Run[];
+  onSelectRun: (run: Run) => void;
+}) {
+  function selectRun(runId?: string | null) {
+    const run = runs.find((item) => item.run_id === runId);
+    if (run) onSelectRun(run);
+  }
+  return (
+    <section className="panel modelRegistryPanel">
+      <div className="panelHeader">
+        <div>
+          <h2>Checkpoint Registry</h2>
+          <p>{models.length} registered or observed models</p>
+        </div>
+        <PackageCheck size={20} />
+      </div>
+      <div className="modelGrid">
+        {models.length === 0 ? (
+          <span className="emptyText">No models</span>
+        ) : (
+          models.map((model) => (
+            <article className="modelCard" key={model.id}>
+              <div className="modelCardTop">
+                <span className={`modelStage stage-${model.stage ?? "registered"}`}>{model.stage ?? "registered"}</span>
+                <em>{model.vocoder || "vocoder n/a"}</em>
+              </div>
+              <h3>{model.id}</h3>
+              <p>{model.model}</p>
+              <div className="modelPath">{model.path}</div>
+              <div className="modelMetricGrid">
+                <div><small>Best WER</small><strong>{pct(model.best_wer)}</strong></div>
+                <div><small>Best CER</small><strong>{pct(model.best_cer)}</strong></div>
+                <div><small>Runs</small><strong>{model.num_runs ?? 0}</strong></div>
+                <div><small>Eval rows</small><strong>{model.num_evaluations ?? 0}</strong></div>
+              </div>
+              <div className="modelLineage">
+                <span>{model.dataset || "dataset n/a"}</span>
+                <span>{model.git_commit ? model.git_commit.slice(0, 8) : "git n/a"}</span>
+                <span>{model.checkpoint_hash ? "hash set" : "hash n/a"}</span>
+              </div>
+              <div className="modelActions">
+                <button disabled={!model.best_run_id} onClick={() => selectRun(model.best_run_id)} type="button">
+                  <BarChart3 size={15} />
+                  <span>best run</span>
+                </button>
+                <button disabled={!model.latest_run_id} onClick={() => selectRun(model.latest_run_id)} type="button">
+                  <Clock size={15} />
+                  <span>latest</span>
+                </button>
+              </div>
+            </article>
+          ))
+        )}
+      </div>
+    </section>
+  );
+}
+
+function EvaluationCenter({
+  report,
+  runs,
+  onSelectRun,
+}: {
+  report: EvaluationReport;
+  runs: Run[];
+  onSelectRun: (run: Run) => void;
+}) {
+  const summary = [
+    { label: "Best WER", value: pct(report.best?.wer), icon: <TrendingDown size={16} /> },
+    { label: "Best mode", value: report.best?.mode ?? "n/a", icon: <AudioLines size={16} /> },
+    { label: "Runs", value: String(report.total_runs ?? 0), icon: <FlaskConical size={16} /> },
+    { label: "Evaluated", value: String(report.evaluated_runs ?? 0), icon: <BadgeCheck size={16} /> },
+  ];
+  return (
+    <div className="dashboardGrid evaluationGrid">
+      <section className="statStrip">
+        {summary.map((item) => (
+          <div className="statCard" key={item.label}>
+            <span className="statIcon">{item.icon}</span>
+            <div>
+              <small>{item.label}</small>
+              <strong>{item.value}</strong>
+            </div>
+          </div>
+        ))}
+      </section>
+      <div className="evaluationSplit">
+        <QualityGatePanel report={report} />
+        <FailureMixPanel report={report} />
+      </div>
+      <LeaderboardTable rows={report.leaderboard ?? []} runs={runs} onSelectRun={onSelectRun} />
+    </div>
   );
 }
 
@@ -989,6 +1748,9 @@ function ComparePage({
               <th>Mode</th>
               <th>WER</th>
               <th>CER</th>
+              <th>Coverage</th>
+              <th>Del%</th>
+              <th>Norm</th>
               <th>Sub</th>
               <th>Del</th>
               <th>Ins</th>
@@ -997,7 +1759,7 @@ function ComparePage({
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={11}>No metric rows</td>
+                <td colSpan={14}>No metric rows</td>
               </tr>
             ) : (
               filtered.map((row) => (
@@ -1019,6 +1781,9 @@ function ComparePage({
                   </td>
                   <td>{pct(row.wer)}</td>
                   <td>{pct(row.cer)}</td>
+                  <td>{pct(row.prediction_coverage)}</td>
+                  <td>{pct(row.wer_deletion_rate)}</td>
+                  <td>{row.normalizer ?? "n/a"}</td>
                   <td>{row.substitutions ?? 0}</td>
                   <td>{row.deletions ?? 0}</td>
                   <td>{row.insertions ?? 0}</td>
@@ -1050,7 +1815,7 @@ function JobLogs({ job, logs, selectedStage }: { job?: RunJob; logs?: RunLogs; s
       <div className="panelHeader">
         <div>
           <h2>실행 로그</h2>
-          <p>{selectedStage ? `${stageLabel(selectedStage.name)} · ${statusLabel(selectedStage.status, selectedStage.dry_run)}` : job ? `${statusLabel(job.status)}${job.pid ? ` pid ${job.pid}` : ""}` : "No job selected"}</p>
+          <p>{selectedStage ? `${stageLabel(selectedStage.name)} · ${statusLabel(selectedStage.status, selectedStage.dry_run)}` : job ? `${statusLabel(job.status)}${job.pid ? ` pid ${job.pid}` : ""}` : "선택된 작업 없음"}</p>
         </div>
         <Terminal size={20} />
       </div>
@@ -1060,15 +1825,15 @@ function JobLogs({ job, logs, selectedStage }: { job?: RunJob; logs?: RunLogs; s
             <strong>Command</strong>
             <button className="copyButton" onClick={() => void copyCommand()} type="button">
               <Clipboard size={15} />
-              <span>{copied ? "Copied" : "Copy"}</span>
+              <span>{copied ? "복사됨" : "복사"}</span>
             </button>
           </div>
           <pre>{commandText}</pre>
         </div>
       ) : null}
       <div className="jobMeta">
-        <span>{job?.started_at ?? "not started"}</span>
-        <span>{job?.finished_at ?? "waiting"}</span>
+        <span>{shortTime(job?.started_at) || "not started"}</span>
+        <span>{shortTime(job?.finished_at) || "waiting"}</span>
         <span>{job?.exit_code ?? "exit n/a"}</span>
       </div>
       <div className="logFiles">
@@ -1107,8 +1872,8 @@ function EventTimeline({ events }: { events?: RunEvents }) {
         ) : (
           rows.map((event, index) => (
             <div className={`eventRow level-${event.level}`} key={`${event.time}-${index}`}>
-              <span>{event.time}</span>
-              <strong>{event.stage}{event.mode ? ` · ${event.mode}` : ""}</strong>
+              <span>{shortTime(event.time)}</span>
+              <strong>{stageLabel(event.stage)}{event.mode ? ` · ${event.mode}` : ""}</strong>
               <em>{event.level}</em>
               <p>{event.message}</p>
             </div>
@@ -1127,11 +1892,13 @@ function App() {
   const [compareRows, setCompareRows] = useState<CompareRow[]>(demoCompareRows);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>(fallbackCheckpoints);
   const [datasets, setDatasets] = useState<Dataset[]>(fallbackDatasets);
+  const [models, setModels] = useState<ModelCard[]>(fallbackModelRegistry.models);
+  const [evaluationReport, setEvaluationReport] = useState<EvaluationReport>(fallbackEvaluationReport);
   const [job, setJob] = useState<RunJob | undefined>();
   const [logs, setLogs] = useState<RunLogs | undefined>();
   const [events, setEvents] = useState<RunEvents | undefined>();
   const [apiState, setApiState] = useState<"api" | "demo" | "loading">("loading");
-  const [activeView, setActiveView] = useState<ViewKey>("overview");
+  const [activeView, setActiveView] = useState<ViewKey>(() => readViewFromHash() ?? "overview");
   const [selectedStageKey, setSelectedStageKey] = useState("");
   const [notice, setNotice] = useState("");
 
@@ -1139,6 +1906,10 @@ function App() {
     const stages = selectedRun?.stages ?? [];
     return stages.find((stage, index) => stageKey(stage, index) === selectedStageKey);
   }, [selectedRun?.stages, selectedStageKey]);
+
+  const phases = useMemo(() => derivePhases(selectedRun), [selectedRun]);
+  const best = useMemo(() => bestMetric(metrics), [metrics]);
+  const runMetrics = useMemo(() => buildRunMetrics(compareRows), [compareRows]);
 
   async function loadRunDetails(run: Run) {
     const [loadedMetrics, loadedUtterances, loadedJob, loadedLogs, loadedEvents] = await Promise.all([
@@ -1158,28 +1929,34 @@ function App() {
   async function refresh() {
     setApiState("loading");
     try {
-      const [loadedRuns, loadedCheckpoints, loadedDatasets, loadedCompare] = await Promise.all([
+      const [loadedRuns, loadedCheckpoints, loadedDatasets, loadedCompare, loadedModels, loadedEvaluationReport] = await Promise.all([
         fetchRuns(),
         fetchCheckpoints(),
         fetchDatasets(),
         fetchCompare(),
+        fetchModels(),
+        fetchEvaluationReport(),
       ]);
       setCheckpoints(loadedCheckpoints.checkpoints.length > 0 ? loadedCheckpoints.checkpoints : fallbackCheckpoints);
       setDatasets(loadedDatasets.datasets.length > 0 ? loadedDatasets.datasets : fallbackDatasets);
       setCompareRows(loadedCompare.rows ?? []);
+      setModels(loadedModels.models ?? []);
+      setEvaluationReport(loadedEvaluationReport);
       if (loadedRuns.length === 0) {
         setRuns([]);
         setSelectedRun(undefined);
         setMetrics([]);
         setUtterances([]);
         setCompareRows([]);
+        setModels(loadedModels.models ?? []);
+        setEvaluationReport(loadedEvaluationReport);
         setJob(undefined);
         setEvents(undefined);
-          setLogs(undefined);
-          setApiState("api");
-          setSelectedStageKey("");
-          return;
-        }
+        setLogs(undefined);
+        setApiState("api");
+        setSelectedStageKey("");
+        return;
+      }
       const current = loadedRuns[0];
       setRuns(loadedRuns);
       setSelectedRun(current);
@@ -1193,6 +1970,8 @@ function App() {
       setCompareRows(demoCompareRows);
       setCheckpoints(fallbackCheckpoints);
       setDatasets(fallbackDatasets);
+      setModels(fallbackModelRegistry.models);
+      setEvaluationReport(fallbackEvaluationReport);
       setJob(undefined);
       setLogs(undefined);
       setEvents(undefined);
@@ -1272,6 +2051,13 @@ function App() {
             setMetrics(loadedMetrics.modes ?? []);
             setUtterances(loadedUtterances);
             setCompareRows(loadedCompare.rows ?? []);
+            try {
+              const [loadedModels, loadedReport] = await Promise.all([fetchModels(), fetchEvaluationReport()]);
+              setModels(loadedModels.models ?? []);
+              setEvaluationReport(loadedReport);
+            } catch {
+              setNotice("Report refresh failed");
+            }
           }
         } catch {
           setNotice("Polling failed");
@@ -1299,6 +2085,26 @@ function App() {
     void refresh();
   }, []);
 
+  // Keep the URL hash in sync so views are bookmarkable and the browser
+  // back/forward buttons move between them.
+  useEffect(() => {
+    const desired = `#/${activeView}`;
+    if (window.location.hash !== desired) {
+      window.history.replaceState(null, "", desired);
+    }
+  }, [activeView]);
+
+  useEffect(() => {
+    const onHashChange = () => {
+      const view = readViewFromHash();
+      if (view) {
+        setActiveView(view);
+      }
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
   useEffect(() => {
     const stages = selectedRun?.stages ?? [];
     if (stages.length === 0) {
@@ -1311,7 +2117,25 @@ function App() {
     }
   }, [selectedRun?.run_id, selectedRun?.stages, selectedStageKey]);
 
-  const pageMeta = selectedRun?.experiment ?? selectedRun?.artifact_root ?? "mlops_artifacts/runs";
+  const nextAction = useMemo(
+    () =>
+      computeNextAction({
+        run: selectedRun,
+        job,
+        metrics,
+        runsCount: runs.length,
+        apiState,
+        best,
+        goTo: setActiveView,
+        onRetry: () => void handleRunAction("retry"),
+      }),
+    [selectedRun, job, metrics, runs.length, apiState, best],
+  );
+
+  function selectStageToLogs(stage: Stage, key: string) {
+    setSelectedStageKey(key);
+    setActiveView("logs");
+  }
 
   return (
     <div className="appShell">
@@ -1319,18 +2143,18 @@ function App() {
       <main className="dashboardMain">
         <header className="topbar">
           <div className="pageTitle">
-            <span>{viewIcon(activeView)}</span>
+            <span>{viewIcon(activeView, 19)}</span>
             <div>
               <h1>{viewLabels[activeView]}</h1>
-              <p>{pageMeta}</p>
+              <p>{viewDescriptions[activeView]}</p>
             </div>
           </div>
           <div className="toolbar">
             <span className={apiState === "api" ? "apiBadge live" : "apiBadge"}>
               <Server size={15} />
-              {apiState === "loading" ? "loading" : apiState}
+              {apiState === "loading" ? "연결 중" : apiState === "api" ? "연결됨" : "데모"}
             </span>
-            <button className="iconButton" onClick={() => void refresh()} title="Refresh runs">
+            <button className="iconButton" onClick={() => void refresh()} title="새로고침">
               <RefreshCcw size={18} />
             </button>
           </div>
@@ -1338,49 +2162,69 @@ function App() {
 
         {activeView === "overview" ? (
           <div className="dashboardGrid overviewGrid">
-            <RunHeader job={job} metrics={metrics} onAction={(action) => void handleRunAction(action)} run={selectedRun} selectedStage={selectedStage} />
-            <RunSummary job={job} metrics={metrics} run={selectedRun} utterances={utterances} />
-            <PipelineGraph
-              onSelectStage={(stage, key) => {
-                setSelectedStageKey(key);
-                setActiveView("logs");
-              }}
-              run={selectedRun}
-              selectedStageKey={selectedStageKey}
-            />
-            <MetricBars metrics={metrics} />
-            <JobLogs job={job} logs={logs} selectedStage={selectedStage} />
+            <NextActionCard action={nextAction} />
+            <LifecycleTracker onSelectStage={selectStageToLogs} run={selectedRun} selectedStageKey={selectedStageKey} />
+            <StatStrip best={best} job={job} metrics={metrics} phases={phases} run={selectedRun} utterances={utterances} />
+            <div className="overviewSplit">
+              <MetricBars metrics={metrics} />
+              <RunHeader job={job} metrics={metrics} onAction={(action) => void handleRunAction(action)} run={selectedRun} selectedStage={selectedStage} />
+            </div>
+            <RunList onSelect={(run) => void selectRun(run)} runMetrics={runMetrics} runs={runs} selectedRunId={selectedRun?.run_id} title="최근 실험" />
           </div>
         ) : null}
 
         {activeView === "launch" ? (
           <div className="dashboardGrid launchGrid">
             <RunLauncher apiState={apiState} checkpoints={checkpoints} datasets={datasets} onCreate={handleCreateRun} />
-            <RunList runs={runs} selectedRunId={selectedRun?.run_id} onSelect={(run) => void selectRun(run)} />
+            <div className="stack">
+              <NextActionCard action={nextAction} />
+              <RunList onSelect={(run) => void selectRun(run)} runMetrics={runMetrics} runs={runs} selectedRunId={selectedRun?.run_id} />
+            </div>
           </div>
         ) : null}
 
         {activeView === "runs" ? (
           <div className="dashboardGrid runsGrid">
-            <RunList runs={runs} selectedRunId={selectedRun?.run_id} onSelect={(run) => void selectRun(run)} />
+            <RunList onSelect={(run) => void selectRun(run)} runMetrics={runMetrics} runs={runs} selectedRunId={selectedRun?.run_id} />
             <div className="stack">
+              <StatStrip best={best} job={job} metrics={metrics} phases={phases} run={selectedRun} utterances={utterances} />
+              <LifecycleTracker onSelectStage={selectStageToLogs} run={selectedRun} selectedStageKey={selectedStageKey} />
               <RunHeader job={job} metrics={metrics} onAction={(action) => void handleRunAction(action)} run={selectedRun} selectedStage={selectedStage} />
-              <RunSummary job={job} metrics={metrics} run={selectedRun} utterances={utterances} />
-              <PipelineGraph
-                onSelectStage={(_stage, key) => setSelectedStageKey(key)}
-                run={selectedRun}
-                selectedStageKey={selectedStageKey}
-              />
             </div>
           </div>
         ) : null}
 
+        {activeView === "models" ? (
+          <div className="dashboardGrid resultsPageGrid">
+            <ModelRegistryPage
+              models={models}
+              runs={runs}
+              onSelectRun={(run) => {
+                void selectRun(run);
+                setActiveView("results");
+              }}
+            />
+          </div>
+        ) : null}
+
+        {activeView === "evaluation" ? (
+          <EvaluationCenter
+            report={evaluationReport}
+            runs={runs}
+            onSelectRun={(run) => {
+              void selectRun(run);
+              setActiveView("results");
+            }}
+          />
+        ) : null}
+
         {activeView === "results" ? (
           <div className="dashboardGrid resultsPageGrid">
-            <RunSummary job={job} metrics={metrics} run={selectedRun} utterances={utterances} />
+            <StatStrip best={best} job={job} metrics={metrics} phases={phases} run={selectedRun} utterances={utterances} />
             <div className="resultsGrid">
               <MetricBars metrics={metrics} />
               <FailureTable metrics={metrics} />
+              <MetricContractPanel metrics={metrics} />
             </div>
           </div>
         ) : null}

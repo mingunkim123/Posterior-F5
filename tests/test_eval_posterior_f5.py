@@ -29,6 +29,8 @@ def test_evaluate_rows_outputs_per_utterance_and_subset_metrics():
     assert len(per_utterance) == 2
     assert per_utterance[1]["wer_deletion_rate"] == pytest.approx(0.5)
     assert per_utterance[0]["output_sha256"] == "sha256:a"
+    assert metrics["normalizer"] == "paper"
+    assert metrics["prediction_coverage"] == pytest.approx(1.0)
 
 
 def test_eval_cli_writes_per_utterance_jsonl(tmp_path):
@@ -63,3 +65,20 @@ def test_eval_cli_writes_per_utterance_jsonl(tmp_path):
     row = json.loads(per_utterance.read_text(encoding="utf-8"))
     assert metrics["wer_deletions"] == 1
     assert row["utterance_id"] == "utt-1"
+
+
+def test_evaluate_rows_counts_missing_predictions_as_deletions():
+    metrics, per_utterance = evaluate_rows(
+        [
+            {"utterance_id": "utt-1", "text": "hello world"},
+            {"utterance_id": "utt-2", "text": "missing words"},
+        ],
+        [{"utterance_id": "utt-1", "mode": "hard", "hypothesis": "hello world"}],
+        mode="hard",
+    )
+
+    assert metrics["num_manifest_utterances"] == 2
+    assert metrics["num_missing_predictions"] == 1
+    assert metrics["prediction_coverage"] == pytest.approx(0.5)
+    assert metrics["wer_deletions"] == 2
+    assert per_utterance[1]["failure_type"] == "missing_prediction"

@@ -1,4 +1,4 @@
-from f5_tts.eval.error_breakdown import cer_breakdown, edit_breakdown, wer_breakdown
+from f5_tts.eval.error_breakdown import cer_breakdown, edit_breakdown, normalize_text, wer_breakdown
 
 
 def test_edit_breakdown_counts_substitution_deletion_and_insertion():
@@ -27,3 +27,8 @@ def test_cer_breakdown_counts_insertion():
     assert result.deletions == 0
     assert result.insertions == 1
     assert result.rate == 1 / 3
+
+
+def test_paper_normalizer_makes_case_and_punctuation_comparable():
+    assert normalize_text("Hello, WORLD!", profile="paper") == "hello world"
+    assert wer_breakdown("Hello, WORLD!", "hello world").rate == 0

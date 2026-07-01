@@ -78,11 +78,16 @@ def test_run_store_lists_runs_and_metrics(tmp_path):
     runs = run_store.list_runs(artifact_root=tmp_path / "runs")
     run = run_store.load_run("run_api_store", artifact_root=tmp_path / "runs")
     metrics = run_store.load_run_metrics("run_api_store", artifact_root=tmp_path / "runs")
+    models = run_store.load_model_registry(artifact_root=tmp_path / "runs")
+    report = run_store.load_evaluation_report(artifact_root=tmp_path / "runs")
 
     assert [item["run_id"] for item in runs] == ["run_api_store"]
     assert run["status"] == "completed"
     assert metrics["run_id"] == "run_api_store"
     assert len(metrics["modes"]) == 4
+    assert any(model["num_runs"] >= 1 for model in models["models"])
+    assert report["evaluated_runs"] == 1
+    assert report["quality_gates"]
 
 
 def test_sqlite_indexer_rebuilds_metadata_cache(tmp_path):
@@ -175,12 +180,29 @@ def test_run_store_builds_pipeline_command(tmp_path):
         artifact_root=tmp_path / "runs",
     )
 
+    assert command[0] == "python"
     assert "platform/workers/run_posterior_f5_pipeline.py" in command[1]
     assert "--run_id" in command
     assert "--mode" in command
     assert command.count("--mode") == 2
     assert "--run_posterior_extraction" in command
     assert "--inference_dry_run" in command
+
+
+def test_run_store_respects_worker_python_override(tmp_path, monkeypatch):
+    run_store = _load_run_store()
+    monkeypatch.setenv("MLOPS_WORKER_PYTHON", "python3")
+
+    command = run_store.build_pipeline_command(
+        {
+            "run_id": "run_api_command",
+            "manifest": "manifests/dev_small.jsonl",
+            "modes": ["hard"],
+        },
+        artifact_root=tmp_path / "runs",
+    )
+
+    assert command[0] == "python3"
 
 
 def test_run_store_starts_job_and_collects_logs(tmp_path):
@@ -405,6 +427,21 @@ def test_worker_marks_stale_running_run_failed_after_process_error(tmp_path):
     assert run["stages"][-1]["name"] == "prediction"
     assert run["stages"][-1]["status"] == "failed"
     assert "missing ref_audio or audio_path" in job["error_message"]
+
+
+def test_worker_normalizes_stale_absolute_python_command():
+    import importlib.util
+
+    path = Path("platform/workers/run_job_worker.py")
+    spec = importlib.util.spec_from_file_location("posterior_f5_job_worker_test", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    command = module.normalize_worker_command(["/definitely_missing/python", "platform/workers/run_posterior_f5_pipeline.py"])
+
+    assert command[0] == sys.executable
+    assert command[1] == "platform/workers/run_posterior_f5_pipeline.py"
 
 
 def test_utterance_inspector_payload_includes_predictions_diff_and_entropy(tmp_path):

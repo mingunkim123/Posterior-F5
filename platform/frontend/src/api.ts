@@ -48,9 +48,16 @@ export type MetricRow = {
   num_utterances?: number;
   wer?: number | null;
   cer?: number | null;
+  normalizer?: string | null;
+  prediction_coverage?: number | null;
   wer_deletions?: number;
   wer_insertions?: number;
   wer_substitutions?: number;
+  wer_reference_length?: number;
+  wer_deletion_rate?: number | null;
+  wer_insertion_rate?: number | null;
+  wer_substitution_rate?: number | null;
+  generation_elapsed_sec_mean?: number | null;
 };
 
 export type MetricsSummary = {
@@ -64,6 +71,11 @@ export type UtteranceMode = {
   prediction_text?: string | null;
   status?: string;
   failure_type?: string;
+  wer?: number | null;
+  cer?: number | null;
+  wer_deletions?: number | null;
+  wer_insertions?: number | null;
+  wer_substitutions?: number | null;
   diff?: Array<{ op: "equal" | "insert" | "delete"; text: string }>;
 };
 
@@ -94,6 +106,7 @@ export type RunCreatePayload = {
   vocoder: string;
   seed: number;
   language: string;
+  hard_ref_text_source: string;
   run_posterior_extraction: boolean;
   skip_whisper: boolean;
   run_inference: boolean;
@@ -102,6 +115,7 @@ export type RunCreatePayload = {
   prediction_dry_run: boolean;
   run_metrics: boolean;
   metrics_dry_run: boolean;
+  metrics_normalizer: string;
   fail_if_exists: boolean;
 };
 
@@ -194,6 +208,10 @@ export type CompareRow = {
   num_utterances?: number;
   wer?: number | null;
   cer?: number | null;
+  normalizer?: string | null;
+  prediction_coverage?: number | null;
+  wer_deletion_rate?: number | null;
+  generation_elapsed_sec_mean?: number | null;
   substitutions?: number;
   deletions?: number;
   insertions?: number;
@@ -217,6 +235,46 @@ export type RunEvent = {
 export type RunEvents = {
   run_id: string;
   events: RunEvent[];
+};
+
+export type ModelCard = Checkpoint & {
+  stage?: string;
+  num_runs?: number;
+  num_evaluations?: number;
+  best_run_id?: string | null;
+  best_mode?: string | null;
+  best_wer?: number | null;
+  best_cer?: number | null;
+  latest_run_id?: string | null;
+  latest_status?: string | null;
+  latest_updated_at?: string | null;
+};
+
+export type ModelRegistry = {
+  generated_at?: string;
+  models: ModelCard[];
+};
+
+export type QualityGate = {
+  name: string;
+  value?: number | null;
+  target: number;
+  direction: "lower" | "higher";
+  unit?: string;
+  status: "pass" | "warn" | "fail" | "unknown";
+};
+
+export type EvaluationReport = {
+  generated_at?: string;
+  total_runs: number;
+  evaluated_runs: number;
+  evaluated_rows: number;
+  best?: CompareRow | null;
+  quality_gates: QualityGate[];
+  failure_mix: Record<string, number>;
+  failure_rates: Record<string, number>;
+  leaderboard: CompareRow[];
+  experiments: Experiment[];
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
@@ -252,6 +310,14 @@ export async function fetchCheckpoints(): Promise<CheckpointRegistry> {
 
 export async function fetchDatasets(): Promise<DatasetRegistry> {
   return getJson<DatasetRegistry>("/datasets");
+}
+
+export async function fetchModels(): Promise<ModelRegistry> {
+  return getJson<ModelRegistry>("/models");
+}
+
+export async function fetchEvaluationReport(): Promise<EvaluationReport> {
+  return getJson<EvaluationReport>("/evaluation-report");
 }
 
 export async function fetchExperiments(): Promise<Experiment[]> {

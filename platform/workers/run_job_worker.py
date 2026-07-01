@@ -64,6 +64,17 @@ def failure_message(stderr_path: Path, exit_code: int) -> str:
     return stderr or f"Job exited with code {exit_code}"
 
 
+def normalize_worker_command(command: list[str]) -> list[str]:
+    if not command:
+        return command
+
+    executable = command[0]
+    executable_path = Path(executable)
+    if executable_path.name in {"python", "python3"} and executable_path.is_absolute() and not executable_path.exists():
+        return [sys.executable, *command[1:]]
+    return command
+
+
 def run_job(run_id: str, *, artifact_root: Path) -> dict[str, Any]:
     run_root = run_path(run_id, artifact_root=artifact_root)
     job_file = job_path(run_id, artifact_root=artifact_root)
@@ -76,10 +87,11 @@ def run_job(run_id: str, *, artifact_root: Path) -> dict[str, Any]:
     stdout_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
 
-    command = job.get("command") or []
+    command = normalize_worker_command(job.get("command") or [])
     if not command:
         return mark_failed(job_file, job, "Job command is empty")
 
+    job["command"] = command
     job["status"] = "running"
     job["started_at"] = timestamp()
     write_json(job_file, job)

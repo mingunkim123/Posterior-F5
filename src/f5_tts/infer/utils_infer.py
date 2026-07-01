@@ -310,7 +310,9 @@ def remove_silence_edges(audio, silence_threshold=-42):
 # preprocess reference audio and text
 
 
-def preprocess_ref_audio_text(ref_audio_orig, ref_text, show_info=print):
+def preprocess_ref_audio_text(ref_audio_orig, ref_text, show_info=print, transcribe_if_empty=True):
+    # transcribe_if_empty=False lets callers keep an intentionally empty ref_text
+    # (e.g. length_only / posterior-based inference modes) without triggering ASR.
     show_info("Converting audio...")
 
     # Compute a hash of the reference audio file
@@ -368,6 +370,11 @@ def preprocess_ref_audio_text(ref_audio_orig, ref_text, show_info=print):
         _ref_audio_cache[audio_hash] = ref_audio
 
     if not ref_text.strip():
+        if not transcribe_if_empty:
+            # Reference text is intentionally empty (length_only / posterior-based modes):
+            # keep it empty and skip ASR entirely.
+            show_info("No reference text provided; skipping transcription (empty ref_text kept).")
+            return ref_audio, ref_text
         global _ref_text_cache
         if audio_hash in _ref_text_cache:
             # Use cached asr transcription
@@ -498,7 +505,7 @@ def infer_batch_process(
     generated_waves = []
     spectrograms = []
 
-    if len(ref_text[-1].encode("utf-8")) == 1:
+    if ref_text and len(ref_text[-1].encode("utf-8")) == 1:
         ref_text = ref_text + " "
 
     def _infer_basic(gen_text):

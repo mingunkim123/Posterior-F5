@@ -6,7 +6,6 @@ import json
 import csv
 import hashlib
 import re
-import sys
 import os
 import signal
 from difflib import SequenceMatcher
@@ -386,6 +385,10 @@ def compare_run_rows(run_ids: list[str] | None = None, *, artifact_root: Path | 
                     "num_utterances": metric.get("num_utterances", 0),
                     "wer": metric.get("wer"),
                     "cer": metric.get("cer"),
+                    "normalizer": metric.get("normalizer"),
+                    "prediction_coverage": metric.get("prediction_coverage"),
+                    "wer_deletion_rate": metric.get("wer_deletion_rate"),
+                    "generation_elapsed_sec_mean": metric.get("generation_elapsed_sec_mean"),
                     "substitutions": metric.get("wer_substitutions", 0),
                     "deletions": metric.get("wer_deletions", 0),
                     "insertions": metric.get("wer_insertions", 0),
@@ -396,6 +399,149 @@ def compare_run_rows(run_ids: list[str] | None = None, *, artifact_root: Path | 
 
     rows.sort(key=lambda item: (item.get("experiment") or "", item.get("run_id") or "", item.get("mode") or ""))
     return {"run_ids": sorted(selected_ids) if selected_ids else [], "rows": rows}
+
+
+def _numeric(value: Any) -> float | None:
+    return value if isinstance(value, (int, float)) else None
+
+
+def _best_row(rows: list[dict[str, Any]], metric: str = "wer") -> dict[str, Any] | None:
+    scored = [row for row in rows if _numeric(row.get(metric)) is not None]
+    if not scored:
+        return None
+    return min(scored, key=lambda row: float(row[metric]))
+
+
+def _checkpoint_stage(checkpoint_id: str, checkpoint: dict[str, Any]) -> str:
+    if checkpoint.get("dataset") or "posterior" in checkpoint_id.lower():
+        return "candidate"
+    if str(checkpoint.get("path") or "").startswith("hf://"):
+        return "baseline"
+    return "registered"
+
+
+def load_model_registry(*, artifact_root: Path | None = None) -> dict[str, Any]:
+    """Return checkpoint registry enriched with observed run metrics."""
+
+    checkpoints = load_checkpoint_registry()["checkpoints"]
+    runs = list_runs(artifact_root=artifact_root)
+    rows = compare_run_rows(artifact_root=artifact_root)["rows"]
+    cards: list[dict[str, Any]] = []
+    known_ids: set[str] = set()
+
+    for checkpoint in checkpoints:
+        checkpoint_id = str(checkpoint["id"])
+        known_ids.add(checkpoint_id)
+        aliases = {checkpoint_id, str(checkpoint.get("path") or ""), str(checkpoint.get("checkpoint_hash") or "")}
+        related_runs = [run for run in runs if run_checkpoint_id(run) in aliases]
+        related_rows = [row for row in rows if str(row.get("checkpoint") or "") in aliases]
+        best = _best_row(related_rows)
+        latest = max(related_runs, key=lambda run: run.get("updated_at") or run.get("created_at") or "", default=None)
+        cards.append(
+            {
+                **checkpoint,
+                "stage": _checkpoint_stage(checkpoint_id, checkpoint),
+                "num_runs": len(related_runs),
+                "num_evaluations": len(related_rows),
+                "best_run_id": best.get("run_id") if best else None,
+                "best_mode": best.get("mode") if best else None,
+                "best_wer": best.get("wer") if best else None,
+                "best_cer": best.get("cer") if best else None,
+                "latest_run_id": latest.get("run_id") if latest else None,
+                "latest_status": latest.get("status") if latest else None,
+                "latest_updated_at": latest.get("updated_at") if latest else None,
+            }
+        )
+
+    for run in runs:
+        checkpoint_id = run_checkpoint_id(run)
+        if not checkpoint_id or checkpoint_id in known_ids:
+            continue
+        known_ids.add(checkpoint_id)
+        related_runs = [item for item in runs if run_checkpoint_id(item) == checkpoint_id]
+        related_rows = [row for row in rows if row.get("checkpoint") == checkpoint_id]
+        best = _best_row(related_rows)
+        latest = max(related_runs, key=lambda item: item.get("updated_at") or item.get("created_at") or "", default=None)
+        cards.append(
+            {
+                "id": checkpoint_id,
+                "model": (run.get("model") or {}).get("name") or "unknown",
+                "path": checkpoint_id,
+                "vocoder": (run.get("model") or {}).get("vocoder") or "",
+                "checkpoint_hash": (run.get("model") or {}).get("checkpoint_hash") or "",
+                "notes": "observed from run artifacts",
+                "dataset": run.get("dataset_id"),
+                "git_commit": (run.get("git") or {}).get("commit"),
+                "stage": "observed",
+                "num_runs": len(related_runs),
+                "num_evaluations": len(related_rows),
+                "best_run_id": best.get("run_id") if best else None,
+                "best_mode": best.get("mode") if best else None,
+                "best_wer": best.get("wer") if best else None,
+                "best_cer": best.get("cer") if best else None,
+                "latest_run_id": latest.get("run_id") if latest else None,
+                "latest_status": latest.get("status") if latest else None,
+                "latest_updated_at": latest.get("updated_at") if latest else None,
+            }
+        )
+
+    cards.sort(key=lambda item: (item.get("best_wer") is None, item.get("best_wer") or 1e9, item.get("id") or ""))
+    return {"models": cards, "generated_at": timestamp()}
+
+
+def _gate(name: str, value: float | None, target: float, *, direction: str, unit: str = "rate") -> dict[str, Any]:
+    if value is None:
+        status = "unknown"
+    elif direction == "lower" and value <= target:
+        status = "pass"
+    elif direction == "higher" and value >= target:
+        status = "pass"
+    elif direction == "lower" and value <= target * 1.5:
+        status = "warn"
+    elif direction == "higher" and value >= target * 0.95:
+        status = "warn"
+    else:
+        status = "fail"
+    return {"name": name, "value": value, "target": target, "direction": direction, "unit": unit, "status": status}
+
+
+def load_evaluation_report(*, artifact_root: Path | None = None) -> dict[str, Any]:
+    rows = compare_run_rows(artifact_root=artifact_root)["rows"]
+    runs = list_runs(artifact_root=artifact_root)
+    scored_rows = [row for row in rows if _numeric(row.get("wer")) is not None]
+    best = _best_row(scored_rows)
+    coverage_values = [_numeric(row.get("prediction_coverage")) for row in scored_rows]
+    coverage_values = [value for value in coverage_values if value is not None]
+    deletion_rates = [_numeric(row.get("wer_deletion_rate")) for row in scored_rows]
+    deletion_rates = [value for value in deletion_rates if value is not None]
+
+    failure_mix = {
+        "substitutions": sum(int(row.get("substitutions") or 0) for row in scored_rows),
+        "deletions": sum(int(row.get("deletions") or 0) for row in scored_rows),
+        "insertions": sum(int(row.get("insertions") or 0) for row in scored_rows),
+    }
+    total_errors = sum(failure_mix.values()) or 1
+    failure_rates = {key: value / total_errors for key, value in failure_mix.items()}
+
+    gates = [
+        _gate("best_wer", _numeric(best.get("wer")) if best else None, 0.05, direction="lower"),
+        _gate("best_cer", _numeric(best.get("cer")) if best else None, 0.03, direction="lower"),
+        _gate("prediction_coverage", min(coverage_values) if coverage_values else None, 0.99, direction="higher"),
+        _gate("deletion_rate", max(deletion_rates) if deletion_rates else None, 0.15, direction="lower"),
+    ]
+
+    return {
+        "generated_at": timestamp(),
+        "total_runs": len(runs),
+        "evaluated_runs": len({row.get("run_id") for row in scored_rows}),
+        "evaluated_rows": len(scored_rows),
+        "best": best,
+        "quality_gates": gates,
+        "failure_mix": failure_mix,
+        "failure_rates": failure_rates,
+        "leaderboard": sorted(scored_rows, key=lambda row: row.get("wer") or 1e9)[:25],
+        "experiments": list_experiments(artifact_root=artifact_root),
+    }
 
 
 def run_export_rows(run_id: str, *, artifact_root: Path | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -416,14 +562,20 @@ def run_export_rows(run_id: str, *, artifact_root: Path | None = None) -> tuple[
                 "num_utterances": metric.get("num_utterances", 0),
                 "wer": metric.get("wer"),
                 "cer": metric.get("cer"),
+                "normalizer": metric.get("normalizer"),
+                "prediction_coverage": metric.get("prediction_coverage"),
                 "wer_substitutions": metric.get("wer_substitutions", 0),
                 "wer_deletions": metric.get("wer_deletions", 0),
                 "wer_insertions": metric.get("wer_insertions", 0),
                 "wer_reference_length": metric.get("wer_reference_length", 0),
+                "wer_deletion_rate": metric.get("wer_deletion_rate"),
+                "wer_insertion_rate": metric.get("wer_insertion_rate"),
+                "wer_substitution_rate": metric.get("wer_substitution_rate"),
                 "cer_substitutions": metric.get("cer_substitutions", 0),
                 "cer_deletions": metric.get("cer_deletions", 0),
                 "cer_insertions": metric.get("cer_insertions", 0),
                 "cer_reference_length": metric.get("cer_reference_length", 0),
+                "generation_elapsed_sec_mean": metric.get("generation_elapsed_sec_mean"),
             }
         )
     return run, rows
@@ -468,7 +620,21 @@ def ensure_run_paper_exports(run_id: str, *, artifact_root: Path | None = None) 
     root = run_path(run_id, artifact_root=artifact_root)
     run, metric_rows = run_export_rows(run_id, artifact_root=artifact_root)
     export_root = root / "paper_exports"
-    main_fields = ["run_id", "experiment", "checkpoint", "seed", "subset", "mode", "status", "num_utterances", "wer", "cer"]
+    main_fields = [
+        "run_id",
+        "experiment",
+        "checkpoint",
+        "seed",
+        "subset",
+        "mode",
+        "status",
+        "num_utterances",
+        "wer",
+        "cer",
+        "prediction_coverage",
+        "normalizer",
+        "generation_elapsed_sec_mean",
+    ]
     error_fields = [
         "run_id",
         "experiment",
@@ -481,6 +647,9 @@ def ensure_run_paper_exports(run_id: str, *, artifact_root: Path | None = None) 
         "wer_deletions",
         "wer_insertions",
         "wer_reference_length",
+        "wer_deletion_rate",
+        "wer_insertion_rate",
+        "wer_substitution_rate",
         "cer_substitutions",
         "cer_deletions",
         "cer_insertions",
@@ -528,6 +697,10 @@ def ensure_experiment_ablation_export(experiment_id: str, *, artifact_root: Path
         "insertions",
         "wer_reference_length",
         "cer_reference_length",
+        "normalizer",
+        "prediction_coverage",
+        "wer_deletion_rate",
+        "generation_elapsed_sec_mean",
     ]
     write_csv(path, rows, fieldnames)
     return path
@@ -551,10 +724,10 @@ def load_run_utterances(run_id: str, *, artifact_root: Path | None = None) -> li
         for row in load_jsonl(root / "posterior_cache" / "run.posterior.jsonl")
         if row.get("utterance_id")
     }
-    metrics_by_id = {
-        str(row.get("utterance_id")): row
-        for row in load_jsonl(root / "metrics" / "per_utterance.jsonl")
-        if row.get("utterance_id")
+    per_utterance_metric_rows = [row for row in load_jsonl(root / "metrics" / "per_utterance.jsonl") if row.get("utterance_id")]
+    metrics_by_mode_id = {
+        (str(row.get("utterance_id")), str(row.get("mode") or "")): row
+        for row in per_utterance_metric_rows
     }
     utterances: list[dict[str, Any]] = []
     for row in rows:
@@ -563,7 +736,8 @@ def load_run_utterances(run_id: str, *, artifact_root: Path | None = None) -> li
             continue
         reference_text = row.get("text") or row.get("ref_text")
         posterior = posterior_by_id.get(str(utterance_id), {})
-        per_utterance_metrics = metrics_by_id.get(str(utterance_id), {})
+        utterance_metric_rows = [metric for metric in per_utterance_metric_rows if str(metric.get("utterance_id")) == str(utterance_id)]
+        worst_metric = max(utterance_metric_rows, key=lambda item: item.get("wer") or 0, default={})
         utterance = {
             "utterance_id": utterance_id,
             "subset": row.get("subset"),
@@ -573,7 +747,7 @@ def load_run_utterances(run_id: str, *, artifact_root: Path | None = None) -> li
             "ref_audio": row.get("ref_audio") or row.get("audio_path"),
             "posterior_entropy": posterior.get("mean_entropy"),
             "one_best": posterior.get("one_best"),
-            "failure_type": per_utterance_metrics.get("failure_type"),
+            "failure_type": worst_metric.get("failure_type"),
             "modes": {},
         }
         for mode in modes:
@@ -581,12 +755,18 @@ def load_run_utterances(run_id: str, *, artifact_root: Path | None = None) -> li
             prediction_file = root / "predictions" / f"{mode}.jsonl"
             prediction_row = predictions_by_mode.get(mode, {}).get(str(utterance_id), {})
             hypothesis = prediction_row.get("hypothesis")
+            per_mode_metric = metrics_by_mode_id.get((str(utterance_id), mode), {})
             utterance["modes"][mode] = {
                 "generated_audio": str(wav.relative_to(root)) if wav.exists() else None,
                 "prediction_file": str(prediction_file.relative_to(root)) if prediction_file.exists() else None,
                 "prediction_text": hypothesis,
                 "status": prediction_row.get("status"),
-                "failure_type": prediction_row.get("failure_type") or prediction_row.get("status"),
+                "failure_type": per_mode_metric.get("failure_type") or prediction_row.get("failure_type") or prediction_row.get("status"),
+                "wer": per_mode_metric.get("wer"),
+                "cer": per_mode_metric.get("cer"),
+                "wer_deletions": per_mode_metric.get("wer_deletions"),
+                "wer_insertions": per_mode_metric.get("wer_insertions"),
+                "wer_substitutions": per_mode_metric.get("wer_substitutions"),
                 "diff": word_diff(reference_text, hypothesis),
             }
         utterances.append(utterance)
@@ -776,7 +956,8 @@ def resume_run(run_id: str, *, artifact_root: Path | None = None) -> dict[str, A
 def build_pipeline_command(payload: dict[str, Any], *, artifact_root: Path | None = None) -> list[str]:
     repo_root = repository_root()
     script = repo_root / "platform" / "workers" / "run_posterior_f5_pipeline.py"
-    command = [sys.executable, str(script)]
+    worker_python = os.environ.get("MLOPS_WORKER_PYTHON", "python")
+    command = [worker_python, str(script)]
 
     scalar_options = {
         "run_id": "--run_id",
@@ -790,6 +971,8 @@ def build_pipeline_command(payload: dict[str, Any], *, artifact_root: Path | Non
         "vocoder": "--vocoder",
         "seed": "--seed",
         "language": "--language",
+        "hard_ref_text_source": "--hard_ref_text_source",
+        "metrics_normalizer": "--metrics_normalizer",
         "posterior_encoder_ckpt": "--posterior_encoder_ckpt",
         "ssl_cache": "--ssl_cache",
     }

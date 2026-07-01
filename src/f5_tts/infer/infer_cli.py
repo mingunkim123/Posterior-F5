@@ -611,7 +611,9 @@ def main():
             voices[voice]["posterior_entry"], voices[voice]["ssl_entry"]
         )
         voices[voice]["ref_audio"], voices[voice]["ref_text"] = preprocess_ref_audio_text(
-            voices[voice]["ref_audio"], voices[voice]["ref_text"]
+            voices[voice]["ref_audio"],
+            voices[voice]["ref_text"],
+            transcribe_if_empty=(ref_text_mode == "hard"),
         )
         print("ref_audio_", voices[voice]["ref_audio"], "\n\n")
 

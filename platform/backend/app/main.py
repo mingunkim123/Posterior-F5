@@ -20,6 +20,8 @@ from run_store import (
     list_runs,
     load_checkpoint_registry,
     load_dataset_registry,
+    load_evaluation_report,
+    load_model_registry,
     load_run,
     load_run_events,
     load_run_job,
@@ -46,6 +48,7 @@ class RunCreateRequest(BaseModel):
     vocoder: str = "vocos"
     seed: int = 1234
     language: str = "en"
+    hard_ref_text_source: str = "manifest"
     run_posterior_extraction: bool = True
     skip_whisper: bool = True
     run_inference: bool = False
@@ -54,13 +57,19 @@ class RunCreateRequest(BaseModel):
     prediction_dry_run: bool = True
     run_metrics: bool = False
     metrics_dry_run: bool = False
+    metrics_normalizer: str = "paper"
     fail_if_exists: bool = False
 
 
 app = FastAPI(title="Posterior-F5 MLOps API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5174", "http://localhost:5174"],
+    allow_origins=[
+        "http://127.0.0.1:5174",
+        "http://localhost:5174",
+        "http://127.0.0.1:5175",
+        "http://localhost:5175",
+    ],
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -109,6 +118,16 @@ def get_checkpoints() -> dict[str, Any]:
 @app.get("/datasets")
 def get_datasets() -> dict[str, Any]:
     return load_dataset_registry()
+
+
+@app.get("/models")
+def get_models() -> dict[str, Any]:
+    return load_model_registry()
+
+
+@app.get("/evaluation-report")
+def get_evaluation_report() -> dict[str, Any]:
+    return load_evaluation_report()
 
 
 # ---------------------------------------------------------------------------
