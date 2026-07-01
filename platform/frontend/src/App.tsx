@@ -1447,12 +1447,15 @@ function RunLauncher({
           <select value={selectedSpeakerCheckpoint?.id ?? ""} onChange={(event) => selectSpeakerCheckpoint(event.target.value)}>
             <option value="">직접 입력 또는 선택 안 함</option>
             {speakerCheckpoints.map((checkpoint) => (
-              <option disabled={checkpoint.exists === false} key={checkpoint.id} value={checkpoint.id}>
+              <option key={checkpoint.id} value={checkpoint.id}>
                 {checkpoint.id} · {checkpoint.feat_type ?? checkpoint.model}{checkpoint.exists === false ? " · 파일 없음" : ""}
               </option>
             ))}
           </select>
           <input placeholder="optional ECAPA checkpoint" value={payload.speaker_checkpoint ?? ""} onChange={(event) => setValue("speaker_checkpoint", event.target.value)} />
+          {selectedSpeakerMissing ? (
+            <small className="formHint warning">선택은 되었지만 파일이 없습니다. 이 경로에 checkpoint를 넣어야 Speaker SIM을 켤 수 있습니다.</small>
+          ) : null}
         </label>
         <div className="formFooter">
           <label>

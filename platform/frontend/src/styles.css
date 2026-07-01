@@ -802,6 +802,17 @@ th {
   outline: 3px solid rgba(37, 99, 235, 0.14);
 }
 
+.formHint {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.formHint.warning {
+  color: #b45309;
+}
+
 .modePicker {
   display: flex;
   flex-wrap: wrap;
