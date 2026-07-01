@@ -50,6 +50,11 @@ export type MetricRow = {
   cer?: number | null;
   normalizer?: string | null;
   prediction_coverage?: number | null;
+  generated_audio_duration_sec_mean?: number | null;
+  rtf_mean?: number | null;
+  speaker_similarity_mean?: number | null;
+  spk_sim_mean?: number | null;
+  utmos_mean?: number | null;
   wer_deletions?: number;
   wer_insertions?: number;
   wer_substitutions?: number;
@@ -58,6 +63,7 @@ export type MetricRow = {
   wer_insertion_rate?: number | null;
   wer_substitution_rate?: number | null;
   generation_elapsed_sec_mean?: number | null;
+  significance?: Record<string, BootstrapComparison>;
 };
 
 export type MetricsSummary = {
@@ -76,6 +82,11 @@ export type UtteranceMode = {
   wer_deletions?: number | null;
   wer_insertions?: number | null;
   wer_substitutions?: number | null;
+  generated_audio_duration_sec?: number | null;
+  rtf?: number | null;
+  speaker_similarity?: number | null;
+  spk_sim?: number | null;
+  utmos?: number | null;
   diff?: Array<{ op: "equal" | "insert" | "delete"; text: string }>;
 };
 
@@ -113,9 +124,20 @@ export type RunCreatePayload = {
   inference_dry_run: boolean;
   run_prediction: boolean;
   prediction_dry_run: boolean;
+  run_audio_metrics: boolean;
+  audio_metrics_dry_run: boolean;
+  run_speaker_similarity: boolean;
+  speaker_checkpoint?: string;
+  speaker_device?: string | null;
+  speaker_feat_type?: string;
+  run_utmos: boolean;
+  utmos_device?: string | null;
   run_metrics: boolean;
   metrics_dry_run: boolean;
   metrics_normalizer: string;
+  bootstrap_samples?: number;
+  bootstrap_seed?: number;
+  significance_baseline?: string;
   fail_if_exists: boolean;
 };
 
@@ -196,10 +218,13 @@ export type Experiment = {
 
 export type CompareRow = {
   run_id: string;
+  row_type?: "seed" | "seed_aggregate" | string;
   project?: string;
   experiment?: string;
   checkpoint?: string;
   seed?: number | string | null;
+  seed_values?: string[];
+  seed_count?: number;
   subset?: string;
   mode?: string;
   status?: string;
@@ -210,13 +235,53 @@ export type CompareRow = {
   cer?: number | null;
   normalizer?: string | null;
   prediction_coverage?: number | null;
+  prediction_coverage_std?: number | null;
   wer_deletion_rate?: number | null;
+  wer_deletion_rate_std?: number | null;
   generation_elapsed_sec_mean?: number | null;
+  generation_elapsed_sec_mean_std?: number | null;
+  generated_audio_duration_sec_mean?: number | null;
+  generated_audio_duration_sec_mean_std?: number | null;
+  rtf_mean?: number | null;
+  rtf_mean_std?: number | null;
+  speaker_similarity_mean?: number | null;
+  speaker_similarity_mean_std?: number | null;
+  spk_sim_mean?: number | null;
+  spk_sim_mean_std?: number | null;
+  utmos_mean?: number | null;
+  utmos_mean_std?: number | null;
   substitutions?: number;
   deletions?: number;
   insertions?: number;
   wer_reference_length?: number;
   cer_reference_length?: number;
+  wer_std?: number | null;
+  cer_std?: number | null;
+  wer_diff_mean?: number | null;
+  wer_ci_low?: number | null;
+  wer_ci_high?: number | null;
+  wer_p_value?: number | null;
+  wer_holm_p_value?: number | null;
+  wer_fdr_p_value?: number | null;
+  wer_significant?: boolean | null;
+  significance_baseline?: string | null;
+};
+
+export type BootstrapComparison = {
+  baseline?: string;
+  candidate?: string;
+  metric?: string;
+  samples?: number;
+  seed?: number;
+  direction?: string;
+  num_pairs?: number;
+  mean_diff?: number | null;
+  ci_low?: number | null;
+  ci_high?: number | null;
+  p_value?: number | null;
+  holm_p_value?: number | null;
+  fdr_p_value?: number | null;
+  significant?: boolean;
 };
 
 export type CompareResponse = {

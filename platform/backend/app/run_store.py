@@ -11,6 +11,7 @@ import signal
 from difflib import SequenceMatcher
 from datetime import datetime
 from pathlib import Path
+from statistics import mean, stdev
 from typing import Any
 
 
@@ -359,6 +360,85 @@ def list_experiment_runs(experiment_id: str, *, artifact_root: Path | None = Non
     return [run for run in list_runs(artifact_root=artifact_root) if experiment_name(run) == experiment_id]
 
 
+def _significance_for_metric(metric: dict[str, Any], name: str = "wer") -> dict[str, Any]:
+    significance = metric.get("significance") or {}
+    if isinstance(significance, dict):
+        value = significance.get(name) or {}
+        return value if isinstance(value, dict) else {}
+    return {}
+
+
+def _mean_or_none(values: list[float]) -> float | None:
+    return mean(values) if values else None
+
+
+def _stdev_or_none(values: list[float]) -> float | None:
+    return stdev(values) if len(values) >= 2 else None
+
+
+def _numeric_values(rows: list[dict[str, Any]], key: str) -> list[float]:
+    return [float(row[key]) for row in rows if _numeric(row.get(key)) is not None]
+
+
+def _seed_aggregate_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str, str, str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        if row.get("row_type") != "seed":
+            continue
+        key = (
+            str(row.get("experiment") or ""),
+            str(row.get("checkpoint") or ""),
+            str(row.get("subset") or "all"),
+            str(row.get("mode") or ""),
+            str(row.get("normalizer") or ""),
+        )
+        grouped.setdefault(key, []).append(row)
+
+    aggregate_rows: list[dict[str, Any]] = []
+    numeric_fields = [
+        "wer",
+        "cer",
+        "prediction_coverage",
+        "wer_deletion_rate",
+        "generation_elapsed_sec_mean",
+        "generated_audio_duration_sec_mean",
+        "rtf_mean",
+        "speaker_similarity_mean",
+        "spk_sim_mean",
+        "utmos_mean",
+    ]
+    count_fields = ["substitutions", "deletions", "insertions", "wer_reference_length", "cer_reference_length"]
+    for (experiment, checkpoint, subset, mode, normalizer), group in grouped.items():
+        seeds = sorted({str(row.get("seed")) for row in group if row.get("seed") is not None})
+        if len(seeds) < 2:
+            continue
+        row: dict[str, Any] = {
+            "run_id": f"{experiment or 'experiment'}::{checkpoint or 'checkpoint'}::{subset}::{mode}::seed_group",
+            "project": group[0].get("project"),
+            "experiment": experiment,
+            "checkpoint": checkpoint,
+            "seed": f"mean±std (n={len(seeds)})",
+            "seed_values": seeds,
+            "seed_count": len(seeds),
+            "subset": subset,
+            "mode": mode,
+            "status": "aggregated",
+            "row_type": "seed_aggregate",
+            "created_at": min((row.get("created_at") or "" for row in group), default=""),
+            "updated_at": max((row.get("updated_at") or "" for row in group), default=""),
+            "num_utterances": _mean_or_none(_numeric_values(group, "num_utterances")),
+            "normalizer": normalizer,
+        }
+        for field in numeric_fields:
+            values = _numeric_values(group, field)
+            row[field] = _mean_or_none(values)
+            row[f"{field}_std"] = _stdev_or_none(values)
+        for field in count_fields:
+            row[field] = sum(int(item.get(field) or 0) for item in group)
+        aggregate_rows.append(row)
+    return aggregate_rows
+
+
 def compare_run_rows(run_ids: list[str] | None = None, *, artifact_root: Path | None = None) -> dict[str, Any]:
     selected_ids = {run_id for run_id in (run_ids or []) if run_id}
     runs = list_runs(artifact_root=artifact_root)
@@ -370,13 +450,16 @@ def compare_run_rows(run_ids: list[str] | None = None, *, artifact_root: Path | 
             continue
         metrics = load_run_metrics(run_id, artifact_root=artifact_root)
         for metric in metrics.get("modes", []):
+            wer_significance = _significance_for_metric(metric, "wer")
             rows.append(
                 {
                     "run_id": run_id,
+                    "row_type": "seed",
                     "project": run.get("project"),
                     "experiment": experiment_name(run),
                     "checkpoint": run_checkpoint_id(run),
                     "seed": run_seed(run),
+                    "seed_count": 1,
                     "subset": metric.get("subset") or "all",
                     "mode": metric.get("mode"),
                     "status": metric.get("status") or run.get("status"),
@@ -389,14 +472,28 @@ def compare_run_rows(run_ids: list[str] | None = None, *, artifact_root: Path | 
                     "prediction_coverage": metric.get("prediction_coverage"),
                     "wer_deletion_rate": metric.get("wer_deletion_rate"),
                     "generation_elapsed_sec_mean": metric.get("generation_elapsed_sec_mean"),
+                    "generated_audio_duration_sec_mean": metric.get("generated_audio_duration_sec_mean"),
+                    "rtf_mean": metric.get("rtf_mean"),
+                    "speaker_similarity_mean": metric.get("speaker_similarity_mean"),
+                    "spk_sim_mean": metric.get("spk_sim_mean"),
+                    "utmos_mean": metric.get("utmos_mean"),
                     "substitutions": metric.get("wer_substitutions", 0),
                     "deletions": metric.get("wer_deletions", 0),
                     "insertions": metric.get("wer_insertions", 0),
                     "wer_reference_length": metric.get("wer_reference_length", 0),
                     "cer_reference_length": metric.get("cer_reference_length", 0),
+                    "wer_diff_mean": wer_significance.get("mean_diff"),
+                    "wer_ci_low": wer_significance.get("ci_low"),
+                    "wer_ci_high": wer_significance.get("ci_high"),
+                    "wer_p_value": wer_significance.get("p_value"),
+                    "wer_holm_p_value": wer_significance.get("holm_p_value"),
+                    "wer_fdr_p_value": wer_significance.get("fdr_p_value"),
+                    "wer_significant": wer_significance.get("significant"),
+                    "significance_baseline": wer_significance.get("baseline"),
                 }
             )
 
+    rows.extend(_seed_aggregate_rows(rows))
     rows.sort(key=lambda item: (item.get("experiment") or "", item.get("run_id") or "", item.get("mode") or ""))
     return {"run_ids": sorted(selected_ids) if selected_ids else [], "rows": rows}
 
@@ -410,6 +507,32 @@ def _best_row(rows: list[dict[str, Any]], metric: str = "wer") -> dict[str, Any]
     if not scored:
         return None
     return min(scored, key=lambda row: float(row[metric]))
+
+
+def _leaderboard_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    aggregate_keys = {
+        (
+            row.get("experiment"),
+            row.get("checkpoint"),
+            row.get("subset"),
+            row.get("mode"),
+            row.get("normalizer"),
+        )
+        for row in rows
+        if row.get("row_type") == "seed_aggregate"
+    }
+    selected: list[dict[str, Any]] = []
+    for row in rows:
+        key = (
+            row.get("experiment"),
+            row.get("checkpoint"),
+            row.get("subset"),
+            row.get("mode"),
+            row.get("normalizer"),
+        )
+        if row.get("row_type") == "seed_aggregate" or key not in aggregate_keys:
+            selected.append(row)
+    return selected
 
 
 def _checkpoint_stage(checkpoint_id: str, checkpoint: dict[str, Any]) -> str:
@@ -509,11 +632,18 @@ def load_evaluation_report(*, artifact_root: Path | None = None) -> dict[str, An
     rows = compare_run_rows(artifact_root=artifact_root)["rows"]
     runs = list_runs(artifact_root=artifact_root)
     scored_rows = [row for row in rows if _numeric(row.get("wer")) is not None]
-    best = _best_row(scored_rows)
+    leaderboard_candidates = _leaderboard_rows(scored_rows)
+    best = _best_row(leaderboard_candidates)
     coverage_values = [_numeric(row.get("prediction_coverage")) for row in scored_rows]
     coverage_values = [value for value in coverage_values if value is not None]
     deletion_rates = [_numeric(row.get("wer_deletion_rate")) for row in scored_rows]
     deletion_rates = [value for value in deletion_rates if value is not None]
+    speaker_similarity_values = [_numeric(row.get("speaker_similarity_mean")) for row in scored_rows]
+    speaker_similarity_values = [value for value in speaker_similarity_values if value is not None]
+    utmos_values = [_numeric(row.get("utmos_mean")) for row in scored_rows]
+    utmos_values = [value for value in utmos_values if value is not None]
+    rtf_values = [_numeric(row.get("rtf_mean")) for row in scored_rows]
+    rtf_values = [value for value in rtf_values if value is not None]
 
     failure_mix = {
         "substitutions": sum(int(row.get("substitutions") or 0) for row in scored_rows),
@@ -528,6 +658,9 @@ def load_evaluation_report(*, artifact_root: Path | None = None) -> dict[str, An
         _gate("best_cer", _numeric(best.get("cer")) if best else None, 0.03, direction="lower"),
         _gate("prediction_coverage", min(coverage_values) if coverage_values else None, 0.99, direction="higher"),
         _gate("deletion_rate", max(deletion_rates) if deletion_rates else None, 0.15, direction="lower"),
+        _gate("speaker_similarity", max(speaker_similarity_values) if speaker_similarity_values else None, 0.75, direction="higher", unit="score"),
+        _gate("utmos", max(utmos_values) if utmos_values else None, 3.5, direction="higher", unit="score"),
+        _gate("rtf", min(rtf_values) if rtf_values else None, 1.0, direction="lower", unit="ratio"),
     ]
 
     return {
@@ -539,7 +672,7 @@ def load_evaluation_report(*, artifact_root: Path | None = None) -> dict[str, An
         "quality_gates": gates,
         "failure_mix": failure_mix,
         "failure_rates": failure_rates,
-        "leaderboard": sorted(scored_rows, key=lambda row: row.get("wer") or 1e9)[:25],
+        "leaderboard": sorted(leaderboard_candidates, key=lambda row: row.get("wer") or 1e9)[:25],
         "experiments": list_experiments(artifact_root=artifact_root),
     }
 
@@ -576,6 +709,11 @@ def run_export_rows(run_id: str, *, artifact_root: Path | None = None) -> tuple[
                 "cer_insertions": metric.get("cer_insertions", 0),
                 "cer_reference_length": metric.get("cer_reference_length", 0),
                 "generation_elapsed_sec_mean": metric.get("generation_elapsed_sec_mean"),
+                "generated_audio_duration_sec_mean": metric.get("generated_audio_duration_sec_mean"),
+                "rtf_mean": metric.get("rtf_mean"),
+                "speaker_similarity_mean": metric.get("speaker_similarity_mean"),
+                "spk_sim_mean": metric.get("spk_sim_mean"),
+                "utmos_mean": metric.get("utmos_mean"),
             }
         )
     return run, rows
@@ -634,6 +772,10 @@ def ensure_run_paper_exports(run_id: str, *, artifact_root: Path | None = None) 
         "prediction_coverage",
         "normalizer",
         "generation_elapsed_sec_mean",
+        "generated_audio_duration_sec_mean",
+        "rtf_mean",
+        "speaker_similarity_mean",
+        "utmos_mean",
     ]
     error_fields = [
         "run_id",
@@ -701,6 +843,10 @@ def ensure_experiment_ablation_export(experiment_id: str, *, artifact_root: Path
         "prediction_coverage",
         "wer_deletion_rate",
         "generation_elapsed_sec_mean",
+        "generated_audio_duration_sec_mean",
+        "rtf_mean",
+        "speaker_similarity_mean",
+        "utmos_mean",
     ]
     write_csv(path, rows, fieldnames)
     return path
@@ -767,6 +913,11 @@ def load_run_utterances(run_id: str, *, artifact_root: Path | None = None) -> li
                 "wer_deletions": per_mode_metric.get("wer_deletions"),
                 "wer_insertions": per_mode_metric.get("wer_insertions"),
                 "wer_substitutions": per_mode_metric.get("wer_substitutions"),
+                "generated_audio_duration_sec": per_mode_metric.get("generated_audio_duration_sec"),
+                "rtf": per_mode_metric.get("rtf"),
+                "speaker_similarity": per_mode_metric.get("speaker_similarity"),
+                "spk_sim": per_mode_metric.get("spk_sim"),
+                "utmos": per_mode_metric.get("utmos"),
                 "diff": word_diff(reference_text, hypothesis),
             }
         utterances.append(utterance)
@@ -856,6 +1007,8 @@ def resume_command(command: list[str], run_id: str, *, artifact_root: Path | Non
         prediction_done = (root / "predictions").exists() and any((root / "predictions").glob("*.jsonl"))
     if inference_done:
         updated = remove_flag(updated, "--run_inference")
+    if (root / "metrics").exists() and any((root / "metrics").glob("*.audio_metrics.jsonl")):
+        updated = remove_flag(updated, "--run_audio_metrics")
     if prediction_done:
         updated = remove_flag(updated, "--run_prediction")
     if (root / "metrics" / "summary.json").exists():
@@ -975,6 +1128,13 @@ def build_pipeline_command(payload: dict[str, Any], *, artifact_root: Path | Non
         "metrics_normalizer": "--metrics_normalizer",
         "posterior_encoder_ckpt": "--posterior_encoder_ckpt",
         "ssl_cache": "--ssl_cache",
+        "speaker_checkpoint": "--speaker_checkpoint",
+        "speaker_device": "--speaker_device",
+        "speaker_feat_type": "--speaker_feat_type",
+        "utmos_device": "--utmos_device",
+        "bootstrap_samples": "--bootstrap_samples",
+        "bootstrap_seed": "--bootstrap_seed",
+        "significance_baseline": "--significance_baseline",
     }
     for key, flag in scalar_options.items():
         value = payload.get(key)
@@ -994,6 +1154,10 @@ def build_pipeline_command(payload: dict[str, Any], *, artifact_root: Path | Non
         "inference_dry_run": "--inference_dry_run",
         "run_prediction": "--run_prediction",
         "prediction_dry_run": "--prediction_dry_run",
+        "run_audio_metrics": "--run_audio_metrics",
+        "audio_metrics_dry_run": "--audio_metrics_dry_run",
+        "run_speaker_similarity": "--run_speaker_similarity",
+        "run_utmos": "--run_utmos",
         "run_metrics": "--run_metrics",
         "metrics_dry_run": "--metrics_dry_run",
         "fail_if_exists": "--fail_if_exists",

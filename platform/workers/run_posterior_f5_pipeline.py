@@ -19,9 +19,35 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+REPO_SRC = Path(__file__).resolve().parents[2] / "src"
+if str(REPO_SRC) not in sys.path:
+    sys.path.insert(0, str(REPO_SRC))
+
+from f5_tts.eval.bootstrap_significance import apply_multiple_comparison_corrections, paired_bootstrap_result
+
 
 DEFAULT_MODES = ["hard", "oracle", "length_only", "soft_ctc"]
 DEFAULT_ARTIFACT_ROOT = "mlops_artifacts/runs"
+DEFAULT_RUN_OPTIONS = {
+    "run_audio_metrics": False,
+    "audio_metrics_dry_run": False,
+    "run_speaker_similarity": False,
+    "speaker_checkpoint": "",
+    "speaker_device": None,
+    "speaker_feat_type": "wavlm_large",
+    "run_utmos": False,
+    "utmos_device": None,
+    "metrics_normalizer": "paper",
+    "bootstrap_samples": 1000,
+    "bootstrap_seed": 1234,
+    "significance_baseline": "hard",
+}
+
+
+def ensure_run_option_defaults(args: argparse.Namespace) -> None:
+    for name, value in DEFAULT_RUN_OPTIONS.items():
+        if not hasattr(args, name):
+            setattr(args, name, value)
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +107,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--posterior_encoder_ckpt", default="", help="Posterior encoder checkpoint for posterior_encoder mode.")
     parser.add_argument("--ssl_cache", default="", help="SSL feature cache JSONL for hybrid mode.")
     parser.add_argument("--min_wav_bytes", type=int, default=44, help="Minimum accepted wav file size after non-dry-run inference.")
+    parser.add_argument(
+        "--run_audio_metrics",
+        action="store_true",
+        help="Compute generated-audio duration/RTF and optional speaker-sim/UTMOS metrics.",
+    )
+    parser.add_argument(
+        "--audio_metrics_dry_run",
+        action="store_true",
+        help="Write planned audio metric artifacts without loading audio metric models.",
+    )
+    parser.add_argument("--run_speaker_similarity", action="store_true", help="Compute ECAPA speaker similarity against ref_audio.")
+    parser.add_argument("--speaker_checkpoint", default="", help="ECAPA/WavLM speaker similarity checkpoint.")
+    parser.add_argument("--speaker_device", default=None, help="Speaker similarity device, e.g. cuda:0 or cpu.")
+    parser.add_argument("--speaker_feat_type", default="wavlm_large", help="ECAPA upstream feature type.")
+    parser.add_argument("--run_utmos", action="store_true", help="Compute UTMOS with SpeechMOS.")
+    parser.add_argument("--utmos_device", default=None, help="UTMOS device, e.g. cuda:0 or cpu.")
     parser.add_argument("--eval_asr", default="openai/whisper-large-v3-turbo")
     parser.add_argument(
         "--run_prediction",
@@ -110,6 +152,9 @@ def parse_args() -> argparse.Namespace:
         choices=["paper", "lowercase", "none"],
         help="Text normalization profile for WER/CER.",
     )
+    parser.add_argument("--bootstrap_samples", type=int, default=1000, help="Paired bootstrap samples per comparison.")
+    parser.add_argument("--bootstrap_seed", type=int, default=1234, help="Paired bootstrap RNG seed.")
+    parser.add_argument("--significance_baseline", default="hard", help="Baseline mode for paired bootstrap comparisons.")
     parser.add_argument("--language", default="en")
     parser.add_argument("--ctc_top_k", type=int, default=8)
     parser.add_argument(
@@ -180,6 +225,21 @@ def apply_config(args: argparse.Namespace, config: dict[str, Any]) -> None:
         if source in generation:
             setattr(args, target, generation[source])
 
+    audio_metrics = config.get("audio_metrics") or config.get("acoustic_metrics") or {}
+    audio_metrics_map = {
+        "run_audio_metrics": "run_audio_metrics",
+        "audio_metrics_dry_run": "audio_metrics_dry_run",
+        "run_speaker_similarity": "run_speaker_similarity",
+        "speaker_checkpoint": "speaker_checkpoint",
+        "speaker_device": "speaker_device",
+        "speaker_feat_type": "speaker_feat_type",
+        "run_utmos": "run_utmos",
+        "utmos_device": "utmos_device",
+    }
+    for source, target in audio_metrics_map.items():
+        if source in audio_metrics:
+            setattr(args, target, audio_metrics[source])
+
     metrics = config.get("metrics") or {}
     metrics_map = {
         "run_prediction": "run_prediction",
@@ -189,6 +249,16 @@ def apply_config(args: argparse.Namespace, config: dict[str, Any]) -> None:
         "metrics_dry_run": "metrics_dry_run",
         "normalizer": "metrics_normalizer",
         "metrics_normalizer": "metrics_normalizer",
+        "report_rtf": "run_audio_metrics",
+        "report_speaker_similarity": "run_speaker_similarity",
+        "report_utmos": "run_utmos",
+        "speaker_checkpoint": "speaker_checkpoint",
+        "speaker_device": "speaker_device",
+        "speaker_feat_type": "speaker_feat_type",
+        "utmos_device": "utmos_device",
+        "bootstrap_samples": "bootstrap_samples",
+        "bootstrap_seed": "bootstrap_seed",
+        "significance_baseline": "significance_baseline",
     }
     for source, target in metrics_map.items():
         if source in metrics:
@@ -423,6 +493,7 @@ def build_run_payload(
     stages: list[dict[str, Any]] | None = None,
     error_message: str | None = None,
 ) -> dict[str, Any]:
+    ensure_run_option_defaults(args)
     modes = args.modes or DEFAULT_MODES
     checkpoint = args.checkpoint or "hf://SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors"
     scaffold_outputs = [
@@ -500,6 +571,17 @@ def build_run_payload(
             "run_metrics": args.run_metrics,
             "metrics_dry_run": args.metrics_dry_run,
             "normalizer": args.metrics_normalizer,
+            "run_audio_metrics": args.run_audio_metrics,
+            "audio_metrics_dry_run": args.audio_metrics_dry_run,
+            "run_speaker_similarity": args.run_speaker_similarity,
+            "speaker_checkpoint": args.speaker_checkpoint,
+            "speaker_device": args.speaker_device,
+            "speaker_feat_type": args.speaker_feat_type,
+            "run_utmos": args.run_utmos,
+            "utmos_device": args.utmos_device,
+            "bootstrap_samples": args.bootstrap_samples,
+            "bootstrap_seed": args.bootstrap_seed,
+            "significance_baseline": args.significance_baseline,
         },
         "git": git,
         "stages": stages,
@@ -965,6 +1047,166 @@ def run_prediction_stage(
     }
 
 
+def run_audio_metrics_stage(
+    *,
+    args: argparse.Namespace,
+    repo_root: Path,
+    run_root: Path,
+    manifest_name: str | None,
+    source_manifest: Path | None,
+) -> dict[str, Any]:
+    if manifest_name is None:
+        raise ValueError("A manifest is required for audio metrics")
+    if args.run_speaker_similarity and not args.speaker_checkpoint and not args.audio_metrics_dry_run:
+        raise ValueError("Speaker similarity requires --speaker_checkpoint")
+
+    modes = args.modes or DEFAULT_MODES
+    manifest_path = run_root / manifest_name
+    manifest_base_dir = source_manifest.expanduser().resolve().parent if source_manifest is not None else None
+    env = _subprocess_env(repo_root)
+    mode_summaries: list[dict[str, Any]] = []
+    overall_status = "succeeded"
+
+    for mode in modes:
+        generation_metadata_path = run_root / "generated" / mode / "commands.jsonl"
+        output_path = run_root / "metrics" / f"{mode}.audio_metrics.json"
+        per_utterance_path = run_root / "metrics" / f"{mode}.audio_metrics.jsonl"
+        log_path = run_root / "logs" / f"audio_metrics_{mode}.log"
+        command = [
+            sys.executable,
+            "src/f5_tts/eval/eval_audio_metrics.py",
+            "--manifest",
+            str(manifest_path),
+            "--generation_metadata",
+            str(generation_metadata_path),
+            "--run_root",
+            str(run_root),
+            "--output",
+            str(output_path),
+            "--per_utterance_output",
+            str(per_utterance_path),
+            "--mode",
+            mode,
+            "--repo_root",
+            str(repo_root),
+        ]
+        if manifest_base_dir is not None:
+            command.extend(["--manifest_base_dir", str(manifest_base_dir)])
+        if args.run_speaker_similarity:
+            command.append("--run_speaker_similarity")
+            command.extend(["--speaker_checkpoint", args.speaker_checkpoint])
+            command.extend(["--speaker_feat_type", args.speaker_feat_type])
+            if args.speaker_device:
+                command.extend(["--speaker_device", args.speaker_device])
+        if args.run_utmos:
+            command.append("--run_utmos")
+            if args.utmos_device:
+                command.extend(["--utmos_device", args.utmos_device])
+
+        if args.audio_metrics_dry_run:
+            metrics = {
+                "mode": mode,
+                "status": "planned",
+                "num_utterances": 0,
+                "num_audio": 0,
+                "audio_metric_coverage": None,
+                "generated_audio_duration_sec_mean": None,
+                "rtf_mean": None,
+                "speaker_similarity_mean": None,
+                "spk_sim_mean": None,
+                "utmos_mean": None,
+            }
+            write_json(output_path, metrics)
+            per_utterance_path.write_text("", encoding="utf-8")
+            log_path.write_text("$ " + " ".join(command) + "\nDRY_RUN: true\n", encoding="utf-8")
+            mode_status = "planned"
+        elif not generation_metadata_path.exists():
+            metrics = {
+                "mode": mode,
+                "status": "failed",
+                "error_message": f"Missing generation metadata: {generation_metadata_path}",
+                "num_utterances": 0,
+                "num_audio": 0,
+                "audio_metric_coverage": None,
+                "generated_audio_duration_sec_mean": None,
+                "rtf_mean": None,
+                "speaker_similarity_mean": None,
+                "spk_sim_mean": None,
+                "utmos_mean": None,
+            }
+            write_json(output_path, metrics)
+            per_utterance_path.write_text("", encoding="utf-8")
+            log_path.write_text(metrics["error_message"], encoding="utf-8")
+            mode_status = "failed"
+            overall_status = "failed"
+        else:
+            completed = subprocess.run(command, cwd=repo_root, check=False, capture_output=True, text=True, env=env)
+            log_path.write_text(
+                "\n".join(
+                    [
+                        "$ " + " ".join(command),
+                        "",
+                        "STDOUT:",
+                        completed.stdout,
+                        "STDERR:",
+                        completed.stderr,
+                        f"EXIT_CODE: {completed.returncode}",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            if completed.returncode == 0:
+                metrics = json.loads(output_path.read_text(encoding="utf-8"))
+                metrics["status"] = "succeeded"
+                write_json(output_path, metrics)
+                mode_status = "succeeded"
+            else:
+                metrics = {
+                    "mode": mode,
+                    "status": "failed",
+                    "error_message": completed.stderr.strip() or completed.stdout.strip(),
+                    "num_utterances": 0,
+                    "num_audio": 0,
+                    "audio_metric_coverage": None,
+                    "generated_audio_duration_sec_mean": None,
+                    "rtf_mean": None,
+                    "speaker_similarity_mean": None,
+                    "spk_sim_mean": None,
+                    "utmos_mean": None,
+                }
+                write_json(output_path, metrics)
+                mode_status = "failed"
+                overall_status = "failed"
+
+        mode_summaries.append(
+            {
+                "mode": mode,
+                "status": mode_status,
+                "metrics": str(output_path.relative_to(run_root)),
+                "per_utterance": str(per_utterance_path.relative_to(run_root)),
+                "log": str(log_path.relative_to(run_root)),
+            }
+        )
+        if overall_status == "failed":
+            break
+
+    if args.audio_metrics_dry_run and overall_status == "succeeded":
+        stage_status = "planned"
+    else:
+        stage_status = overall_status
+    return {
+        "name": "audio_metrics",
+        "status": stage_status,
+        "dry_run": args.audio_metrics_dry_run,
+        "modes": mode_summaries,
+        "outputs": [
+            "metrics/<mode>.audio_metrics.json",
+            "metrics/<mode>.audio_metrics.jsonl",
+            "logs/audio_metrics_<mode>.log",
+        ],
+    }
+
+
 def numeric_metric_row(metrics: dict[str, Any]) -> dict[str, Any]:
     return {
         "mode": metrics.get("mode"),
@@ -985,6 +1227,11 @@ def numeric_metric_row(metrics: dict[str, Any]) -> dict[str, Any]:
         "cer_insertions": metrics.get("cer_insertions", 0),
         "cer_reference_length": metrics.get("cer_reference_length", 0),
         "generation_elapsed_sec_mean": metrics.get("generation_elapsed_sec_mean"),
+        "generated_audio_duration_sec_mean": metrics.get("generated_audio_duration_sec_mean"),
+        "rtf_mean": metrics.get("rtf_mean"),
+        "speaker_similarity_mean": metrics.get("speaker_similarity_mean"),
+        "spk_sim_mean": metrics.get("spk_sim_mean"),
+        "utmos_mean": metrics.get("utmos_mean"),
     }
 
 
@@ -1016,12 +1263,83 @@ def write_summary_files(run_root: Path, metrics_by_mode: list[dict[str, Any]]) -
         "cer_insertions",
         "cer_reference_length",
         "generation_elapsed_sec_mean",
+        "generated_audio_duration_sec_mean",
+        "rtf_mean",
+        "speaker_similarity_mean",
+        "spk_sim_mean",
+        "utmos_mean",
     ]
     with summary_csv.open("w", encoding="utf-8", newline="") as file:
         writer = csv.DictWriter(file, fieldnames=fieldnames)
         writer.writeheader()
         for metrics in metrics_by_mode:
             writer.writerow(numeric_metric_row(metrics))
+
+
+def write_significance_files(
+    *,
+    run_root: Path,
+    rows: list[dict[str, Any]],
+    modes: list[str],
+    baseline: str,
+    samples: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    significance_path = run_root / "metrics" / "significance.json"
+    if baseline not in modes or not rows:
+        payload = {
+            "created_at": utc_or_local_now().isoformat(timespec="seconds"),
+            "baseline": baseline,
+            "samples": samples,
+            "seed": seed,
+            "comparisons": [],
+        }
+        write_json(significance_path, payload)
+        return []
+
+    comparisons: list[dict[str, Any]] = []
+    metrics = ["wer", "cer", "wer_deletion_rate"]
+    for candidate in modes:
+        if candidate == baseline:
+            continue
+        for metric in metrics:
+            comparisons.append(
+                paired_bootstrap_result(
+                    rows,
+                    baseline=baseline,
+                    candidate=candidate,
+                    metric=metric,
+                    samples=samples,
+                    seed=seed,
+                )
+            )
+
+    comparisons = apply_multiple_comparison_corrections(comparisons)
+    payload = {
+        "created_at": utc_or_local_now().isoformat(timespec="seconds"),
+        "baseline": baseline,
+        "samples": samples,
+        "seed": seed,
+        "correction_scope": "within_run_by_metric",
+        "comparisons": comparisons,
+    }
+    write_json(significance_path, payload)
+    return comparisons
+
+
+def attach_significance_to_metrics(metrics_by_mode: list[dict[str, Any]], comparisons: list[dict[str, Any]]) -> None:
+    by_candidate: dict[str, dict[str, Any]] = {}
+    for comparison in comparisons:
+        candidate = str(comparison.get("candidate") or "")
+        metric = str(comparison.get("metric") or "")
+        if not candidate or not metric:
+            continue
+        by_candidate.setdefault(candidate, {})[metric] = comparison
+
+    for metrics in metrics_by_mode:
+        mode = str(metrics.get("mode") or "")
+        if mode in by_candidate:
+            metrics["significance"] = by_candidate[mode]
 
 
 def run_metrics_stage(
@@ -1047,6 +1365,7 @@ def run_metrics_stage(
         output_path = run_root / "metrics" / f"{mode}.metrics.json"
         per_utterance_path = run_root / "metrics" / f"{mode}.per_utterance.jsonl"
         generation_metadata_path = run_root / "generated" / mode / "commands.jsonl"
+        audio_metrics_path = run_root / "metrics" / f"{mode}.audio_metrics.jsonl"
         log_path = run_root / "logs" / f"metrics_{mode}.log"
         command = [
             sys.executable,
@@ -1068,6 +1387,8 @@ def run_metrics_stage(
         ]
         if generation_metadata_path.exists():
             command.extend(["--generation_metadata", str(generation_metadata_path)])
+        if audio_metrics_path.exists():
+            command.extend(["--audio_metrics", str(audio_metrics_path)])
 
         if args.metrics_dry_run:
             metrics = {
@@ -1078,6 +1399,11 @@ def run_metrics_stage(
                 "cer": None,
                 "posterior_file": str(posterior_file) if posterior_file.exists() else "",
                 "normalizer": args.metrics_normalizer,
+                "generated_audio_duration_sec_mean": None,
+                "rtf_mean": None,
+                "speaker_similarity_mean": None,
+                "spk_sim_mean": None,
+                "utmos_mean": None,
             }
             write_json(output_path, metrics)
             per_utterance_path.write_text("", encoding="utf-8")
@@ -1093,6 +1419,11 @@ def run_metrics_stage(
                     "wer": None,
                     "cer": None,
                     "normalizer": args.metrics_normalizer,
+                    "generated_audio_duration_sec_mean": None,
+                    "rtf_mean": None,
+                    "speaker_similarity_mean": None,
+                    "spk_sim_mean": None,
+                    "utmos_mean": None,
                 }
                 write_json(output_path, metrics)
                 log_path.write_text(metrics["error_message"], encoding="utf-8")
@@ -1128,6 +1459,11 @@ def run_metrics_stage(
                         "wer": None,
                         "cer": None,
                         "normalizer": args.metrics_normalizer,
+                        "generated_audio_duration_sec_mean": None,
+                        "rtf_mean": None,
+                        "speaker_similarity_mean": None,
+                        "spk_sim_mean": None,
+                        "utmos_mean": None,
                     }
                     write_json(output_path, metrics)
                     mode_status = "failed"
@@ -1146,13 +1482,22 @@ def run_metrics_stage(
         if overall_status == "failed":
             break
 
-    write_summary_files(run_root, metrics_by_mode)
     combined_per_utterance = []
     for mode in modes:
         per_mode_path = run_root / "metrics" / f"{mode}.per_utterance.jsonl"
         if per_mode_path.exists():
             combined_per_utterance.extend(iter_jsonl(per_mode_path))
     write_jsonl(run_root / "metrics" / "per_utterance.jsonl", combined_per_utterance)
+    comparisons = write_significance_files(
+        run_root=run_root,
+        rows=[] if args.metrics_dry_run else combined_per_utterance,
+        modes=modes,
+        baseline=args.significance_baseline,
+        samples=args.bootstrap_samples,
+        seed=args.bootstrap_seed,
+    )
+    attach_significance_to_metrics(metrics_by_mode, comparisons)
+    write_summary_files(run_root, metrics_by_mode)
     if args.metrics_dry_run and overall_status == "succeeded":
         stage_status = "planned"
     else:
@@ -1168,6 +1513,7 @@ def run_metrics_stage(
             "metrics/per_utterance.jsonl",
             "metrics/summary.json",
             "metrics/summary.csv",
+            "metrics/significance.json",
             "logs/metrics_<mode>.log",
         ],
     }
@@ -1205,6 +1551,7 @@ def _execute_stage(
 
 
 def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> Path:
+    ensure_run_option_defaults(args)
     repo_root = repo_root or repository_root()
     modes = args.modes or DEFAULT_MODES
     run_id = args.run_id or generate_run_id()
@@ -1269,6 +1616,17 @@ def scaffold_run(args: argparse.Namespace, *, repo_root: Path | None = None) -> 
             {**base_kwargs, "source_manifest": source_manifest},
             {"outputs": ["generated/<mode>/<utterance_id>.wav", "generated/<mode>/commands.jsonl"], "dry_run": args.inference_dry_run},
             "Inference failed; inspect logs/inference_<mode>.log",
+        ),
+        (
+            args.run_audio_metrics,
+            "audio_metrics",
+            run_audio_metrics_stage,
+            {**base_kwargs, "source_manifest": source_manifest},
+            {
+                "outputs": ["metrics/<mode>.audio_metrics.json", "metrics/<mode>.audio_metrics.jsonl"],
+                "dry_run": args.audio_metrics_dry_run,
+            },
+            "Audio metrics failed; inspect logs/audio_metrics_<mode>.log",
         ),
         (
             args.run_prediction,

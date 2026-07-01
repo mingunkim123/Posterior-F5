@@ -107,11 +107,33 @@ const defaultRunPayload: RunCreatePayload = {
   inference_dry_run: true,
   run_prediction: false,
   prediction_dry_run: true,
+  run_audio_metrics: false,
+  audio_metrics_dry_run: true,
+  run_speaker_similarity: false,
+  speaker_checkpoint: "",
+  speaker_device: null,
+  speaker_feat_type: "wavlm_large",
+  run_utmos: false,
+  utmos_device: null,
   run_metrics: false,
   metrics_dry_run: false,
   metrics_normalizer: "paper",
+  bootstrap_samples: 1000,
+  bootstrap_seed: 1234,
+  significance_baseline: "hard",
   fail_if_exists: false,
 };
+
+function mergeDatasetsWithFallback(loaded: Dataset[]): Dataset[] {
+  const byId = new Map<string, Dataset>();
+  for (const dataset of fallbackDatasets) {
+    byId.set(dataset.id, dataset);
+  }
+  for (const dataset of loaded) {
+    byId.set(dataset.id, dataset);
+  }
+  return Array.from(byId.values());
+}
 
 type RunPreset = {
   key: string;
@@ -209,6 +231,24 @@ function compactNumber(value?: number | null, digits = 2): string {
   return value.toFixed(digits);
 }
 
+function pValue(value?: number | null): string {
+  if (value === null || value === undefined || Number.isNaN(value)) return "n/a";
+  if (value < 0.001) return "<0.001";
+  return value.toFixed(3);
+}
+
+function metricWithStd(value?: number | null, std?: number | null, formatter: (value?: number | null) => string = compactNumber): string {
+  const base = formatter(value);
+  if (std === null || std === undefined || Number.isNaN(std)) return base;
+  return `${base} ± ${formatter(std)}`;
+}
+
+function gateMetricValue(value: number | null | undefined, unit?: string): string {
+  if (unit === "score") return compactNumber(value);
+  if (unit === "ratio") return compactNumber(value, 3);
+  return pct(value);
+}
+
 function metricCount(value?: number | null): string {
   if (value === null || value === undefined) return "0";
   return Intl.NumberFormat().format(value);
@@ -246,6 +286,7 @@ function stageLabel(name: string): string {
     scaffold: "실험 준비",
     posterior_extraction: "Posterior 생성",
     inference: "음성 생성",
+    audio_metrics: "음향 평가",
     prediction: "ASR 변환",
     metrics: "점수 계산",
     job: "Worker 작업",
@@ -259,8 +300,9 @@ function stageMeta(name: string): string {
     scaffold: "파일과 설정",
     posterior_extraction: "참조 신호",
     inference: "mode별 wav",
+    audio_metrics: "SIM · UTMOS · RTF",
     prediction: "ASR 결과",
-    metrics: "WER and CER",
+    metrics: "WER · CER · CI",
     job: "worker 상태",
     queued: "실행 대기",
   };
@@ -306,7 +348,7 @@ const PHASES: PhaseDef[] = [
     label: "모델 평가",
     sub: "ASR · WER / CER",
     hint: "생성 음성을 ASR로 전사하고 정확도를 점수화합니다.",
-    stageNames: ["prediction", "metrics"],
+    stageNames: ["audio_metrics", "prediction", "metrics"],
     icon: (size) => <Gauge size={size} />,
   },
 ];
@@ -912,7 +954,7 @@ function MetricBars({ metrics }: { metrics: MetricRow[] }) {
       <div className="panelHeader">
         <div>
           <h2>품질 지표</h2>
-          <p>mode별 WER / CER · 낮을수록 좋음</p>
+          <p>mode별 intelligibility · speaker · naturalness · speed</p>
         </div>
         <BarChart3 size={20} />
       </div>
@@ -939,6 +981,11 @@ function MetricBars({ metrics }: { metrics: MetricRow[] }) {
               <div className="metricNumbers">
                 <span>{pct(item.wer)}</span>
                 <span>{pct(item.cer)}</span>
+              </div>
+              <div className="acousticPills">
+                <span title="Speaker similarity">SIM {compactNumber(item.speaker_similarity_mean ?? item.spk_sim_mean)}</span>
+                <span title="UTMOS naturalness">UTMOS {compactNumber(item.utmos_mean)}</span>
+                <span title="Real-time factor">RTF {compactNumber(item.rtf_mean, 3)}</span>
               </div>
             </div>
           ))
@@ -1063,6 +1110,19 @@ function RunLauncher({
     }));
   }
 
+  useEffect(() => {
+    if (datasets.length === 0 || datasets.some((item) => item.id === payload.dataset_id)) {
+      return;
+    }
+    const dataset = datasets.find((item) => item.id === "dev_small_20") ?? datasets[0];
+    setPayload((current) => ({
+      ...current,
+      dataset_id: dataset.id,
+      manifest: dataset.manifest,
+      language: dataset.language ?? current.language,
+    }));
+  }, [datasets, payload.dataset_id]);
+
   function toggleMode(mode: string) {
     setActivePreset("");
     setPayload((current) => {
@@ -1088,6 +1148,7 @@ function RunLauncher({
 
   const disabled = isSubmitting || apiState !== "api";
   const activePresetSummary = runPresets.find((preset) => preset.key === activePreset)?.summary;
+  const selectedDataset = datasets.find((item) => item.id === payload.dataset_id);
   return (
     <section className="panel launcher">
       <div className="panelHeader">
@@ -1120,7 +1181,7 @@ function RunLauncher({
           <input value={payload.experiment} onChange={(event) => setValue("experiment", event.target.value)} required />
         </label>
         <label>
-          <span>Dataset</span>
+          <span>Dataset · {datasets.length}개</span>
           <select value={payload.dataset_id ?? ""} onChange={(event) => selectDataset(event.target.value)}>
             {datasets.map((dataset) => (
               <option key={dataset.id} value={dataset.id}>
@@ -1129,9 +1190,24 @@ function RunLauncher({
             ))}
           </select>
         </label>
+        <div className="datasetPicker" aria-label="Datasets">
+          {datasets.map((dataset) => (
+            <button
+              className={dataset.id === payload.dataset_id ? "datasetChoice active" : "datasetChoice"}
+              key={dataset.id}
+              onClick={() => selectDataset(dataset.id)}
+              type="button"
+            >
+              <strong>{dataset.id}</strong>
+              <small>
+                {dataset.num_utterances ?? "n/a"} utt · {dataset.subsets?.join(", ") || "all subsets"}
+              </small>
+            </button>
+          ))}
+        </div>
         <div className="datasetMeta">
-          <span>{datasets.find((item) => item.id === payload.dataset_id)?.num_utterances ?? "n/a"} utt</span>
-          <span>{datasets.find((item) => item.id === payload.dataset_id)?.subsets?.join(", ") || "all subsets"}</span>
+          <span>{selectedDataset?.num_utterances ?? "n/a"} utt</span>
+          <span>{selectedDataset?.subsets?.join(", ") || "all subsets"}</span>
           <span>{payload.language}</span>
         </div>
         <label>
@@ -1172,6 +1248,10 @@ function RunLauncher({
             <span>음성 생성</span>
           </label>
           <label className="checkRow">
+            <input checked={payload.run_audio_metrics} type="checkbox" onChange={(event) => setValue("run_audio_metrics", event.target.checked)} />
+            <span>음향 평가</span>
+          </label>
+          <label className="checkRow">
             <input checked={payload.run_prediction} type="checkbox" onChange={(event) => setValue("run_prediction", event.target.checked)} />
             <span>ASR 변환</span>
           </label>
@@ -1210,10 +1290,26 @@ function RunLauncher({
             <span>ASR 계획만</span>
           </label>
           <label className="checkRow">
+            <input checked={payload.audio_metrics_dry_run} type="checkbox" onChange={(event) => setValue("audio_metrics_dry_run", event.target.checked)} />
+            <span>음향 계획만</span>
+          </label>
+          <label className="checkRow">
+            <input checked={payload.run_speaker_similarity} type="checkbox" onChange={(event) => setValue("run_speaker_similarity", event.target.checked)} />
+            <span>Speaker SIM</span>
+          </label>
+          <label className="checkRow">
+            <input checked={payload.run_utmos} type="checkbox" onChange={(event) => setValue("run_utmos", event.target.checked)} />
+            <span>UTMOS</span>
+          </label>
+          <label className="checkRow">
             <input checked={payload.fail_if_exists} type="checkbox" onChange={(event) => setValue("fail_if_exists", event.target.checked)} />
             <span>새 ID 강제</span>
           </label>
         </div>
+        <label>
+          <span>Speaker checkpoint</span>
+          <input placeholder="optional ECAPA checkpoint" value={payload.speaker_checkpoint ?? ""} onChange={(event) => setValue("speaker_checkpoint", event.target.value)} />
+        </label>
         <div className="formFooter">
           <label>
             <span>Seed</span>
@@ -1377,21 +1473,36 @@ function MetricContractPanel({ metrics }: { metrics: MetricRow[] }) {
   const latency = metrics
     .map((item) => item.generation_elapsed_sec_mean)
     .filter((value): value is number => typeof value === "number");
+  const rtf = metrics
+    .map((item) => item.rtf_mean)
+    .filter((value): value is number => typeof value === "number");
+  const speakerSimilarity = metrics
+    .map((item) => item.speaker_similarity_mean ?? item.spk_sim_mean)
+    .filter((value): value is number => typeof value === "number");
+  const utmos = metrics
+    .map((item) => item.utmos_mean)
+    .filter((value): value is number => typeof value === "number");
   const minCoverage = coverage.length > 0 ? Math.min(...coverage) : null;
   const maxDeletion = deletionRates.length > 0 ? Math.max(...deletionRates) : null;
   const meanLatency = latency.length > 0 ? latency.reduce((sum, value) => sum + value, 0) / latency.length : null;
+  const meanRtf = rtf.length > 0 ? rtf.reduce((sum, value) => sum + value, 0) / rtf.length : null;
+  const meanSpeaker = speakerSimilarity.length > 0 ? speakerSimilarity.reduce((sum, value) => sum + value, 0) / speakerSimilarity.length : null;
+  const meanUtmos = utmos.length > 0 ? utmos.reduce((sum, value) => sum + value, 0) / utmos.length : null;
   const rows = [
     { label: "Normalizer", value: normalizers.join(", ") || "n/a", icon: <BadgeCheck size={16} /> },
     { label: "Coverage", value: pct(minCoverage), icon: <Target size={16} /> },
     { label: "Max deletion", value: pct(maxDeletion), icon: <TrendingDown size={16} /> },
     { label: "Mean gen sec", value: compactNumber(meanLatency), icon: <Clock size={16} /> },
+    { label: "Mean RTF", value: compactNumber(meanRtf, 3), icon: <Gauge size={16} /> },
+    { label: "Mean SIM", value: compactNumber(meanSpeaker), icon: <AudioLines size={16} /> },
+    { label: "Mean UTMOS", value: compactNumber(meanUtmos), icon: <Sparkles size={16} /> },
   ];
   return (
     <section className="panel contractPanel">
       <div className="panelHeader">
         <div>
           <h2>평가 계약</h2>
-          <p>normalization · coverage · latency</p>
+          <p>normalization · coverage · acoustic metrics</p>
         </div>
         <BadgeCheck size={20} />
       </div>
@@ -1414,6 +1525,9 @@ function gateLabel(name: string): string {
     best_cer: "Best CER",
     prediction_coverage: "Coverage",
     deletion_rate: "Deletion",
+    speaker_similarity: "Speaker SIM",
+    utmos: "UTMOS",
+    rtf: "RTF",
   };
   return labels[name] ?? name.replace(/_/g, " ");
 }
@@ -1438,8 +1552,8 @@ function QualityGatePanel({ report }: { report: EvaluationReport }) {
                 <strong>{gateLabel(gate.name)}</strong>
                 <em>{gate.status}</em>
               </div>
-              <span>{pct(gate.value)}</span>
-              <small>{gate.direction === "lower" ? "≤" : "≥"} {pct(gate.target)}</small>
+              <span>{gateMetricValue(gate.value, gate.unit)}</span>
+              <small>{gate.direction === "lower" ? "≤" : "≥"} {gateMetricValue(gate.target, gate.unit)}</small>
             </div>
           ))
         )}
@@ -1514,11 +1628,15 @@ function LeaderboardTable({
               <th>CER</th>
               <th>Coverage</th>
               <th>Del</th>
+              <th>SIM</th>
+              <th>UTMOS</th>
+              <th>RTF</th>
+              <th>Seeds</th>
             </tr>
           </thead>
           <tbody>
             {rows.length === 0 ? (
-              <tr><td colSpan={7}>No ranked rows</td></tr>
+              <tr><td colSpan={11}>No ranked rows</td></tr>
             ) : (
               rows.map((row, index) => (
                 <tr key={`${row.run_id}-${row.mode}-${row.subset ?? "all"}-${index}`}>
@@ -1538,6 +1656,10 @@ function LeaderboardTable({
                   <td>{pct(row.cer)}</td>
                   <td>{pct(row.prediction_coverage)}</td>
                   <td>{pct(row.wer_deletion_rate)}</td>
+                  <td>{compactNumber(row.speaker_similarity_mean ?? row.spk_sim_mean)}</td>
+                  <td>{compactNumber(row.utmos_mean)}</td>
+                  <td>{compactNumber(row.rtf_mean, 3)}</td>
+                  <td>{row.seed_count ?? 1}</td>
                 </tr>
               ))
             )}
@@ -1624,6 +1746,8 @@ function EvaluationCenter({
   const summary = [
     { label: "Best WER", value: pct(report.best?.wer), icon: <TrendingDown size={16} /> },
     { label: "Best mode", value: report.best?.mode ?? "n/a", icon: <AudioLines size={16} /> },
+    { label: "SIM", value: compactNumber(report.best?.speaker_similarity_mean ?? report.best?.spk_sim_mean), icon: <AudioLines size={16} /> },
+    { label: "UTMOS", value: compactNumber(report.best?.utmos_mean), icon: <Sparkles size={16} /> },
     { label: "Runs", value: String(report.total_runs ?? 0), icon: <FlaskConical size={16} /> },
     { label: "Evaluated", value: String(report.evaluated_runs ?? 0), icon: <BadgeCheck size={16} /> },
   ];
@@ -1667,6 +1791,7 @@ function ComparePage({
   const [mode, setMode] = useState("all");
   const [subset, setSubset] = useState("all");
   const [seed, setSeed] = useState("all");
+  const [rowType, setRowType] = useState("all");
   const [query, setQuery] = useState("");
 
   const experiments = uniqueValues(rows, "experiment");
@@ -1674,6 +1799,7 @@ function ComparePage({
   const modes = uniqueValues(rows, "mode");
   const subsets = uniqueValues(rows, "subset");
   const seeds = uniqueValues(rows, "seed");
+  const rowTypes = uniqueValues(rows, "row_type");
 
   const filtered = useMemo(() => {
     const normalizedQuery = query.trim().toLowerCase();
@@ -1683,12 +1809,13 @@ function ComparePage({
       .filter((row) => mode === "all" || row.mode === mode)
       .filter((row) => subset === "all" || row.subset === subset)
       .filter((row) => seed === "all" || String(row.seed ?? "") === seed)
+      .filter((row) => rowType === "all" || row.row_type === rowType)
       .filter((row) => {
         if (!normalizedQuery) return true;
         return [row.run_id, row.experiment, row.checkpoint, row.mode].some((value) => String(value ?? "").toLowerCase().includes(normalizedQuery));
       })
       .sort((a, b) => (a.wer ?? Number.POSITIVE_INFINITY) - (b.wer ?? Number.POSITIVE_INFINITY));
-  }, [checkpoint, experiment, mode, query, rows, seed, subset]);
+  }, [checkpoint, experiment, mode, query, rows, rowType, seed, subset]);
 
   function selectRun(runId: string) {
     const run = runs.find((item) => item.run_id === runId);
@@ -1735,6 +1862,10 @@ function ComparePage({
           <option value="all">all seeds</option>
           {seeds.map((value) => <option key={value} value={value}>{value}</option>)}
         </select>
+        <select value={rowType} onChange={(event) => setRowType(event.target.value)}>
+          <option value="all">all row types</option>
+          {rowTypes.map((value) => <option key={value} value={value}>{value}</option>)}
+        </select>
       </div>
       <div className="tableScroller">
         <table className="compareTable">
@@ -1743,12 +1874,19 @@ function ComparePage({
               <th>Run</th>
               <th>Experiment</th>
               <th>Checkpoint</th>
+              <th>Type</th>
               <th>Seed</th>
               <th>Subset</th>
               <th>Mode</th>
               <th>WER</th>
+              <th>WER CI</th>
+              <th>p Holm</th>
+              <th>Sig</th>
               <th>CER</th>
               <th>Coverage</th>
+              <th>SIM</th>
+              <th>UTMOS</th>
+              <th>RTF</th>
               <th>Del%</th>
               <th>Norm</th>
               <th>Sub</th>
@@ -1759,7 +1897,7 @@ function ComparePage({
           <tbody>
             {filtered.length === 0 ? (
               <tr>
-                <td colSpan={14}>No metric rows</td>
+                <td colSpan={21}>No metric rows</td>
               </tr>
             ) : (
               filtered.map((row) => (
@@ -1771,6 +1909,7 @@ function ComparePage({
                   </td>
                   <td>{row.experiment ?? "n/a"}</td>
                   <td>{row.checkpoint || "n/a"}</td>
+                  <td>{row.row_type === "seed_aggregate" ? "seed group" : "seed"}</td>
                   <td>{row.seed ?? "n/a"}</td>
                   <td>{row.subset ?? "all"}</td>
                   <td>
@@ -1779,9 +1918,23 @@ function ComparePage({
                       {row.mode ?? "mode"}
                     </span>
                   </td>
-                  <td>{pct(row.wer)}</td>
-                  <td>{pct(row.cer)}</td>
+                  <td>{metricWithStd(row.wer, row.wer_std, pct)}</td>
+                  <td>{row.wer_ci_low === undefined || row.wer_ci_low === null ? "n/a" : `${pct(row.wer_ci_low)}..${pct(row.wer_ci_high)}`}</td>
+                  <td>{pValue(row.wer_holm_p_value ?? row.wer_p_value)}</td>
+                  <td>
+                    {row.wer_significant === undefined || row.wer_significant === null ? (
+                      <span className="sigBadge neutral">n/a</span>
+                    ) : (
+                      <span className={row.wer_significant ? "sigBadge significant" : "sigBadge neutral"}>
+                        {row.wer_significant ? "sig" : "ns"}
+                      </span>
+                    )}
+                  </td>
+                  <td>{metricWithStd(row.cer, row.cer_std, pct)}</td>
                   <td>{pct(row.prediction_coverage)}</td>
+                  <td>{metricWithStd(row.speaker_similarity_mean ?? row.spk_sim_mean, row.speaker_similarity_mean_std ?? row.spk_sim_mean_std, compactNumber)}</td>
+                  <td>{metricWithStd(row.utmos_mean, row.utmos_mean_std, compactNumber)}</td>
+                  <td>{metricWithStd(row.rtf_mean, row.rtf_mean_std, (value) => compactNumber(value, 3))}</td>
                   <td>{pct(row.wer_deletion_rate)}</td>
                   <td>{row.normalizer ?? "n/a"}</td>
                   <td>{row.substitutions ?? 0}</td>
@@ -1938,7 +2091,7 @@ function App() {
         fetchEvaluationReport(),
       ]);
       setCheckpoints(loadedCheckpoints.checkpoints.length > 0 ? loadedCheckpoints.checkpoints : fallbackCheckpoints);
-      setDatasets(loadedDatasets.datasets.length > 0 ? loadedDatasets.datasets : fallbackDatasets);
+      setDatasets(mergeDatasetsWithFallback(loadedDatasets.datasets ?? []));
       setCompareRows(loadedCompare.rows ?? []);
       setModels(loadedModels.models ?? []);
       setEvaluationReport(loadedEvaluationReport);

@@ -433,6 +433,62 @@ def test_run_scaffold_can_compute_metrics_summary(tmp_path):
     assert oracle_metrics["mode"] == "oracle"
     assert len(summary["modes"]) == 4
     assert "mode,num_utterances,wer,cer" in summary_csv
+    assert (run_root / "metrics" / "significance.json").exists()
+
+
+def test_run_scaffold_can_plan_audio_metrics_stage(tmp_path):
+    ref_audio = tmp_path / "ref.wav"
+    ref_audio.write_bytes(b"not-used-in-dry-run")
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "utterance_id": "utt-001",
+                "ref_audio": str(ref_audio),
+                "ref_text": "Reference transcript.",
+                "gen_text": "Target text.",
+                "text": "Target text.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--run_id",
+            "run_audio_metrics_plan",
+            "--artifact_root",
+            str(tmp_path / "runs"),
+            "--manifest",
+            str(manifest),
+            "--run_inference",
+            "--inference_dry_run",
+            "--run_audio_metrics",
+            "--audio_metrics_dry_run",
+            "--run_prediction",
+            "--prediction_dry_run",
+            "--run_metrics",
+        ],
+        cwd=Path.cwd(),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    run_root = Path(result.stdout.strip())
+    payload = json.loads((run_root / "run.json").read_text(encoding="utf-8"))
+    audio_metrics = json.loads((run_root / "metrics" / "hard.audio_metrics.json").read_text(encoding="utf-8"))
+    summary = json.loads((run_root / "metrics" / "summary.json").read_text(encoding="utf-8"))
+
+    assert payload["stages"][2]["name"] == "audio_metrics"
+    assert payload["stages"][2]["status"] == "planned"
+    assert audio_metrics["status"] == "planned"
+    assert "rtf_mean" in summary["modes"][0]
+    assert "speaker_similarity_mean" in summary["modes"][0]
+    assert "utmos_mean" in summary["modes"][0]
 
 
 def test_run_scaffold_can_apply_yaml_config(tmp_path):

@@ -16,6 +16,7 @@ RUN apt-get update \
 
 COPY pyproject.toml README.md ./
 COPY src ./src
+COPY manifests ./manifests
 COPY platform/backend ./platform/backend
 COPY platform/config ./platform/config
 COPY platform/samples ./platform/samples

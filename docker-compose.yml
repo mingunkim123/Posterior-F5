@@ -4,8 +4,8 @@ services:
       context: .
       dockerfile: platform/docker/Dockerfile.api
     image: posterior-f5-api:local
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     environment:
       PYTHONUNBUFFERED: "1"
       MLOPS_QUEUE_BACKEND: redis
@@ -13,6 +13,8 @@ services:
     volumes:
       - ./mlops_artifacts:/app/mlops_artifacts
       - ./data:/app/data:ro
+      - ./manifests:/app/manifests:ro
+      - ./platform/config:/app/platform/config:ro
       - ./ckpts:/app/ckpts:ro
       - ./posterior_cache:/app/posterior_cache
     healthcheck:
@@ -46,6 +48,8 @@ services:
     volumes:
       - ./mlops_artifacts:/app/mlops_artifacts
       - ./data:/app/data:ro
+      - ./manifests:/app/manifests:ro
+      - ./platform/config:/app/platform/config:ro
       - ./ckpts:/app/ckpts:ro
       - ./posterior_cache:/app/posterior_cache
       - hf_cache:/root/.cache/huggingface
@@ -68,6 +72,8 @@ services:
     volumes:
       - ./mlops_artifacts:/app/mlops_artifacts
       - ./data:/app/data:ro
+      - ./manifests:/app/manifests:ro
+      - ./platform/config:/app/platform/config:ro
       - ./ckpts:/app/ckpts:ro
       - ./posterior_cache:/app/posterior_cache
     depends_on:
@@ -79,7 +85,7 @@ services:
       context: .
       dockerfile: platform/docker/Dockerfile.frontend
       args:
-        VITE_API_BASE: http://127.0.0.1:8000
+        VITE_API_BASE: /api
     image: posterior-f5-dashboard:local
     ports:
       - "5174:5174"

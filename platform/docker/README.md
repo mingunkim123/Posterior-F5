@@ -5,9 +5,14 @@ putting experiment artifacts inside containers.
 
 ## Services
 
-- `api`: FastAPI server on `http://127.0.0.1:8000`
+- `api`: FastAPI server inside the compose network at `http://api:8000`
 - `worker`: ML-capable queue consumer built from `Dockerfile.worker-gpu`
 - `frontend`: React dashboard on `http://127.0.0.1:5174`
+
+The browser should use the frontend URL only. The frontend is built with
+`VITE_API_BASE=/api`, and nginx proxies `/api/*` to the internal API service.
+This keeps the dashboard on one stable origin and avoids mixing local `.venv`
+servers with compose containers.
 
 The default worker image includes torch, torchaudio, transformers, vocos,
 soundfile, and the local F5-TTS package so it can run posterior extraction,
@@ -20,6 +25,8 @@ The compose file mounts these host directories into the API container:
 
 - `./mlops_artifacts` for run outputs
 - `./data` for local manifests/audio inputs
+- `./manifests` for checked-in experiment manifests
+- `./platform/config` for dataset and checkpoint registries
 - `./ckpts` for checkpoints
 - `./posterior_cache` for reusable posterior artifacts
 
@@ -39,6 +46,7 @@ mlops_artifacts/runs/<run_id>/
 From the repository root:
 
 ```bash
+docker compose down --remove-orphans
 docker compose up --build
 ```
 
@@ -48,28 +56,20 @@ Then open:
 http://127.0.0.1:5174
 ```
 
+Useful checks:
+
+```bash
+curl http://127.0.0.1:5174/health
+curl http://127.0.0.1:5174/api/datasets
+docker compose ps
+docker compose logs -f api worker frontend
+```
+
 For a fast scaffold-only control-plane smoke test without the ML dependency
 image, run the lightweight worker profile instead:
 
 ```bash
-docker compose up --build api frontend
-docker compose --profile lite up --build worker-lite
-```
-
-For local development without Docker, or when an existing container owns
-`mlops_artifacts/`, point the API and file worker at a writable run root:
-
-```bash
-MLOPS_ARTIFACT_ROOT=/tmp/posterior-f5-dashboard-runs \
-  PYTHONPATH=platform/backend/app:src \
-  .venv/bin/python -m uvicorn main:app --app-dir platform/backend/app --host 127.0.0.1 --port 8001
-
-PYTHONPATH=platform/backend/app:src \
-  .venv/bin/python platform/workers/run_job_worker.py \
-  --artifact_root /tmp/posterior-f5-dashboard-runs --poll_interval 1.0
-
-cd platform/frontend
-VITE_API_BASE=http://127.0.0.1:8001 npm run dev -- --host 127.0.0.1 --port 5174
+docker compose --profile lite up --build api frontend worker-lite
 ```
 
 To check the ML worker runtime after building:

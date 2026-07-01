@@ -26,6 +26,24 @@ datasets:
       - clean/dev_small
     notes: Small checked-in manifest that points to the bundled F5-TTS example audio for config and worker smoke runs.
 
+  dev_small_20:
+    manifest: manifests/dev_small_20.jsonl
+    language: en
+    num_utterances: 20
+    purpose: Local development stability run
+    subsets:
+      - clean/dev_small
+    notes: Uses the bundled reference audio with twenty target sentences for latency, artifacts, and basic failure checks.
+
+  hard_50:
+    manifest: manifests/hard_50.jsonl
+    language: en
+    num_utterances: 50
+    purpose: Hard sentence stress test
+    subsets:
+      - hard/test
+    notes: Uses the bundled reference audio with hand-written hard sentences for deletion, repetition, substitution, punctuation, number, and acronym stress.
+
   clean_test:
     manifest: manifests/clean_test.jsonl
     language: en

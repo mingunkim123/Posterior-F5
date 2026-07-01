@@ -31,6 +31,22 @@ export const fallbackDatasets: Dataset[] = [
     purpose: "smoke test",
     subsets: ["smoke"],
   },
+  {
+    id: "dev_small_20",
+    manifest: "manifests/dev_small_20.jsonl",
+    language: "en",
+    num_utterances: 20,
+    purpose: "Local development stability run",
+    subsets: ["clean/dev_small"],
+  },
+  {
+    id: "hard_50",
+    manifest: "manifests/hard_50.jsonl",
+    language: "en",
+    num_utterances: 50,
+    purpose: "Hard sentence stress test",
+    subsets: ["hard/test"],
+  },
 ];
 
 export const demoRuns: Run[] = [
@@ -57,10 +73,10 @@ export const demoRuns: Run[] = [
 export const demoMetrics: MetricsSummary = {
   run_id: "run_demo_dev_small",
   modes: [
-    { mode: "hard", status: "succeeded", num_utterances: 24, wer: 0.192, cer: 0.094, normalizer: "paper", prediction_coverage: 1, wer_deletion_rate: 0.102, wer_deletions: 18, wer_insertions: 5, wer_substitutions: 11, generation_elapsed_sec_mean: 1.82 },
-    { mode: "oracle", status: "succeeded", num_utterances: 24, wer: 0.131, cer: 0.058, normalizer: "paper", prediction_coverage: 1, wer_deletion_rate: 0.061, wer_deletions: 9, wer_insertions: 4, wer_substitutions: 9, generation_elapsed_sec_mean: 1.77 },
-    { mode: "length_only", status: "succeeded", num_utterances: 24, wer: 0.166, cer: 0.076, normalizer: "paper", prediction_coverage: 1, wer_deletion_rate: 0.082, wer_deletions: 12, wer_insertions: 6, wer_substitutions: 10, generation_elapsed_sec_mean: 1.69 },
-    { mode: "soft_ctc", status: "succeeded", num_utterances: 24, wer: 0.148, cer: 0.069, normalizer: "paper", prediction_coverage: 1, wer_deletion_rate: 0.071, wer_deletions: 10, wer_insertions: 5, wer_substitutions: 10, generation_elapsed_sec_mean: 1.73 },
+    { mode: "hard", status: "succeeded", num_utterances: 24, wer: 0.192, cer: 0.094, normalizer: "paper", prediction_coverage: 1, wer_deletion_rate: 0.102, wer_deletions: 18, wer_insertions: 5, wer_substitutions: 11, generation_elapsed_sec_mean: 1.82, rtf_mean: 0.46, speaker_similarity_mean: 0.71, spk_sim_mean: 0.71, utmos_mean: 3.42 },
+    { mode: "oracle", status: "succeeded", num_utterances: 24, wer: 0.131, cer: 0.058, normalizer: "paper", prediction_coverage: 1, wer_deletion_rate: 0.061, wer_deletions: 9, wer_insertions: 4, wer_substitutions: 9, generation_elapsed_sec_mean: 1.77, rtf_mean: 0.44, speaker_similarity_mean: 0.78, spk_sim_mean: 0.78, utmos_mean: 3.72 },
+    { mode: "length_only", status: "succeeded", num_utterances: 24, wer: 0.166, cer: 0.076, normalizer: "paper", prediction_coverage: 1, wer_deletion_rate: 0.082, wer_deletions: 12, wer_insertions: 6, wer_substitutions: 10, generation_elapsed_sec_mean: 1.69, rtf_mean: 0.43, speaker_similarity_mean: 0.73, spk_sim_mean: 0.73, utmos_mean: 3.53 },
+    { mode: "soft_ctc", status: "succeeded", num_utterances: 24, wer: 0.148, cer: 0.069, normalizer: "paper", prediction_coverage: 1, wer_deletion_rate: 0.071, wer_deletions: 10, wer_insertions: 5, wer_substitutions: 10, generation_elapsed_sec_mean: 1.73, rtf_mean: 0.45, speaker_similarity_mean: 0.76, spk_sim_mean: 0.76, utmos_mean: 3.66, significance: { wer: { baseline: "hard", candidate: "soft_ctc", metric: "wer", mean_diff: -0.044, ci_low: -0.071, ci_high: -0.012, p_value: 0.018, holm_p_value: 0.036, fdr_p_value: 0.024, significant: true } } },
   ],
 };
 
@@ -69,6 +85,9 @@ export const demoCompareRows: CompareRow[] = demoMetrics.modes.map((metric) => (
   project: "Posterior-F5",
   experiment: "baseline_dev_small",
   checkpoint: "f5tts_v1_base_hf",
+  row_type: "seed",
+  seed: 1234,
+  seed_count: 1,
   mode: metric.mode,
   status: metric.status,
   num_utterances: metric.num_utterances,
@@ -78,9 +97,21 @@ export const demoCompareRows: CompareRow[] = demoMetrics.modes.map((metric) => (
   prediction_coverage: metric.prediction_coverage,
   wer_deletion_rate: metric.wer_deletion_rate,
   generation_elapsed_sec_mean: metric.generation_elapsed_sec_mean,
+  rtf_mean: metric.rtf_mean,
+  speaker_similarity_mean: metric.speaker_similarity_mean,
+  spk_sim_mean: metric.spk_sim_mean,
+  utmos_mean: metric.utmos_mean,
   substitutions: metric.wer_substitutions,
   deletions: metric.wer_deletions,
   insertions: metric.wer_insertions,
+  wer_diff_mean: metric.significance?.wer?.mean_diff,
+  wer_ci_low: metric.significance?.wer?.ci_low,
+  wer_ci_high: metric.significance?.wer?.ci_high,
+  wer_p_value: metric.significance?.wer?.p_value,
+  wer_holm_p_value: metric.significance?.wer?.holm_p_value,
+  wer_fdr_p_value: metric.significance?.wer?.fdr_p_value,
+  wer_significant: metric.significance?.wer?.significant,
+  significance_baseline: metric.significance?.wer?.baseline,
 }));
 
 export const fallbackModelRegistry: ModelRegistry = {
@@ -113,6 +144,9 @@ export const fallbackEvaluationReport: EvaluationReport = {
     { name: "best_cer", value: 0.058, target: 0.03, direction: "lower", unit: "rate", status: "warn" },
     { name: "prediction_coverage", value: 1, target: 0.99, direction: "higher", unit: "rate", status: "pass" },
     { name: "deletion_rate", value: 0.102, target: 0.15, direction: "lower", unit: "rate", status: "pass" },
+    { name: "speaker_similarity", value: 0.78, target: 0.75, direction: "higher", unit: "score", status: "pass" },
+    { name: "utmos", value: 3.72, target: 3.5, direction: "higher", unit: "score", status: "pass" },
+    { name: "rtf", value: 0.43, target: 1, direction: "lower", unit: "ratio", status: "pass" },
   ],
   failure_mix: { substitutions: 40, deletions: 49, insertions: 20 },
   failure_rates: { substitutions: 0.367, deletions: 0.45, insertions: 0.183 },

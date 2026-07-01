@@ -55,9 +55,20 @@ class RunCreateRequest(BaseModel):
     inference_dry_run: bool = True
     run_prediction: bool = False
     prediction_dry_run: bool = True
+    run_audio_metrics: bool = False
+    audio_metrics_dry_run: bool = True
+    run_speaker_similarity: bool = False
+    speaker_checkpoint: str = ""
+    speaker_device: str | None = None
+    speaker_feat_type: str = "wavlm_large"
+    run_utmos: bool = False
+    utmos_device: str | None = None
     run_metrics: bool = False
     metrics_dry_run: bool = False
     metrics_normalizer: str = "paper"
+    bootstrap_samples: int = 1000
+    bootstrap_seed: int = 1234
+    significance_baseline: str = "hard"
     fail_if_exists: bool = False
 
 
