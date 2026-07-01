@@ -993,6 +993,32 @@ def remove_flag(command: list[str], flag: str, *, takes_value: bool = False) -> 
     return updated
 
 
+def count_manifest_rows(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    with path.open("r", encoding="utf-8") as file:
+        return sum(1 for line in file if line.strip())
+
+
+def generation_complete_for_mode(root: Path, mode: str) -> bool:
+    commands_path = root / "generated" / mode / "commands.jsonl"
+    if not commands_path.exists():
+        return False
+    try:
+        rows = load_jsonl(commands_path)
+    except (json.JSONDecodeError, OSError):
+        return False
+    if not rows:
+        return False
+
+    expected_rows = count_manifest_rows(root / "manifest.jsonl")
+    if expected_rows is not None and len(rows) < expected_rows:
+        return False
+
+    complete_statuses = {"planned", "succeeded"}
+    return all(row.get("status") in complete_statuses for row in rows)
+
+
 def resume_command(command: list[str], run_id: str, *, artifact_root: Path | None = None) -> list[str]:
     root = run_path(run_id, artifact_root=artifact_root)
     updated = list(command)
@@ -1000,10 +1026,13 @@ def resume_command(command: list[str], run_id: str, *, artifact_root: Path | Non
         updated = remove_flag(updated, "--run_posterior_extraction")
     modes = [updated[index + 1] for index, item in enumerate(updated[:-1]) if item == "--mode"]
     if modes:
-        inference_done = all((root / "generated" / mode / "commands.jsonl").exists() for mode in modes)
+        inference_done = all(generation_complete_for_mode(root, mode) for mode in modes)
         prediction_done = all((root / "predictions" / f"{mode}.jsonl").exists() for mode in modes)
     else:
-        inference_done = (root / "generated").exists() and any((root / "generated").glob("*/commands.jsonl"))
+        inference_done = (root / "generated").exists() and any(
+            generation_complete_for_mode(root, path.parent.name)
+            for path in (root / "generated").glob("*/commands.jsonl")
+        )
         prediction_done = (root / "predictions").exists() and any((root / "predictions").glob("*.jsonl"))
     if inference_done:
         updated = remove_flag(updated, "--run_inference")

@@ -769,6 +769,60 @@ def build_inference_command(
     return command
 
 
+def build_batch_inference_command(
+    *,
+    args: argparse.Namespace,
+    run_root: Path,
+    mode: str,
+    input_jsonl: Path,
+    output_jsonl: Path,
+) -> list[str]:
+    command = [
+        sys.executable,
+        "src/f5_tts/infer/infer_batch_jsonl.py",
+        "--input_jsonl",
+        str(input_jsonl),
+        "--output_jsonl",
+        str(output_jsonl),
+        "--run_root",
+        str(run_root),
+        "--mode",
+        mode,
+        "--model",
+        args.model,
+        "--ref_text_mode",
+        mode_to_cli_ref_text_mode(mode),
+        "--nfe_step",
+        str(args.nfe_step),
+        "--cfg_strength",
+        str(args.cfg_strength),
+        "--sway_sampling_coef",
+        str(args.sway_sampling_coef),
+        "--speed",
+        str(args.speed),
+        "--seed",
+        str(args.seed),
+        "--vocoder_name",
+        args.vocoder,
+        "--min_wav_bytes",
+        str(args.min_wav_bytes),
+    ]
+    if args.checkpoint:
+        command.extend(["--ckpt_file", args.checkpoint])
+    if args.vocab_file:
+        command.extend(["--vocab_file", args.vocab_file])
+    if args.infer_device:
+        command.extend(["--device", args.infer_device])
+    if mode in {"length_only", "soft_ctc", "posterior_encoder", "hybrid"}:
+        posterior_file = run_root / "posterior_cache" / "run.posterior.jsonl"
+        command.extend(["--posterior_file", str(posterior_file)])
+    if mode == "posterior_encoder" and args.posterior_encoder_ckpt:
+        command.extend(["--posterior_encoder_ckpt", args.posterior_encoder_ckpt])
+    if mode == "hybrid" and args.ssl_cache:
+        command.extend(["--ssl_cache", args.ssl_cache])
+    return command
+
+
 def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     with path.open("w", encoding="utf-8") as file:
         for row in rows:
@@ -809,6 +863,7 @@ def run_inference_stage(
         )
 
     env = _subprocess_env(repo_root)
+    batch_runner = repo_root / "src" / "f5_tts" / "infer" / "infer_batch_jsonl.py"
 
     mode_summaries: list[dict[str, Any]] = []
     overall_status = "succeeded"
@@ -816,6 +871,7 @@ def run_inference_stage(
         mode_dir = run_root / "generated" / mode
         mode_dir.mkdir(parents=True, exist_ok=True)
         commands_path = mode_dir / "commands.jsonl"
+        batch_input_path = mode_dir / "batch_input.jsonl"
         log_path = run_root / "logs" / f"inference_{mode}.log"
         command_rows: list[dict[str, Any]] = []
         log_parts: list[str] = []
@@ -832,6 +888,9 @@ def run_inference_stage(
                     "output": str(output_path.relative_to(run_root)),
                     "dry_run": args.inference_dry_run,
                     "status": "planned" if args.inference_dry_run else "running",
+                    "ref_audio": row["ref_audio"],
+                    "ref_text": ref_text_for_mode(row, mode, hard_ref_text_source=args.hard_ref_text_source),
+                    "gen_text": str(row["gen_text"]),
                     "seed": args.seed,
                     "checkpoint_id": args.checkpoint_id or "",
                     "checkpoint": args.checkpoint or "hf://SWivid/F5-TTS/F5TTS_v1_Base/model_1250000.safetensors",
@@ -845,20 +904,31 @@ def run_inference_stage(
                     "output_sha256": "",
                 }
 
-                if args.inference_dry_run:
-                    command_rows.append(command_row)
-                    continue
+                command_rows.append(command_row)
 
-                started_at = utc_or_local_now()
-                command_row["started_at"] = started_at.isoformat(timespec="seconds")
-                completed = subprocess.run(command, cwd=repo_root, check=False, capture_output=True, text=True, env=env)
-                finished_at = utc_or_local_now()
-                command_row["finished_at"] = finished_at.isoformat(timespec="seconds")
-                command_row["elapsed_sec"] = max((finished_at - started_at).total_seconds(), 0.0)
-                command_row["exit_code"] = completed.returncode
+            if args.inference_dry_run:
+                pass
+            elif batch_runner.exists():
+                write_jsonl(batch_input_path, command_rows)
+                write_jsonl(commands_path, command_rows)
+                batch_command = build_batch_inference_command(
+                    args=args,
+                    run_root=run_root,
+                    mode=mode,
+                    input_jsonl=batch_input_path,
+                    output_jsonl=commands_path,
+                )
+                completed = subprocess.run(
+                    batch_command,
+                    cwd=repo_root,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
                 log_parts.extend(
                     [
-                        "$ " + " ".join(command),
+                        "$ " + " ".join(batch_command),
                         "",
                         "STDOUT:",
                         completed.stdout,
@@ -868,29 +938,93 @@ def run_inference_stage(
                         "",
                     ]
                 )
+                if commands_path.exists():
+                    command_rows = iter_jsonl(commands_path)
                 if completed.returncode != 0:
-                    command_row["status"] = "failed"
-                    command_row["error_message"] = completed.stderr.strip() or completed.stdout.strip()
-                    command_rows.append(command_row)
                     mode_status = "failed"
                     overall_status = "failed"
-                    break
+                    message = completed.stderr.strip() or completed.stdout.strip() or "Batch inference failed"
+                    if not command_rows:
+                        command_rows = [
+                            {
+                                "utterance_id": rows[0]["utterance_id"] if rows else "",
+                                "mode": mode,
+                                "status": "failed",
+                                "error_message": message,
+                            }
+                        ]
+                    elif not any(row.get("status") == "failed" for row in command_rows):
+                        command_rows[-1]["status"] = "failed"
+                        command_rows[-1]["error_message"] = message
+                for command_row in command_rows:
+                    if command_row.get("status") != "succeeded":
+                        continue
+                    output_path = run_root / str(command_row.get("output") or "")
+                    output_metadata = output_file_metadata(output_path, min_bytes=args.min_wav_bytes)
+                    command_row["output_exists"] = output_metadata["exists"]
+                    command_row["output_size_bytes"] = output_metadata["size_bytes"]
+                    command_row["output_sha256"] = output_metadata["sha256"]
+                    if not output_metadata["ok"]:
+                        command_row["status"] = "failed"
+                        command_row["error_message"] = output_metadata["error_message"]
+                        mode_status = "failed"
+                        overall_status = "failed"
+                        log_parts.append(output_metadata["error_message"])
+                        break
+            else:
+                legacy_rows: list[dict[str, Any]] = []
+                for command_row in command_rows:
+                    output_path = run_root / str(command_row["output"])
+                    started_at = utc_or_local_now()
+                    command_row["started_at"] = started_at.isoformat(timespec="seconds")
+                    completed = subprocess.run(
+                        command_row["command"],
+                        cwd=repo_root,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        env=env,
+                    )
+                    finished_at = utc_or_local_now()
+                    command_row["finished_at"] = finished_at.isoformat(timespec="seconds")
+                    command_row["elapsed_sec"] = max((finished_at - started_at).total_seconds(), 0.0)
+                    command_row["exit_code"] = completed.returncode
+                    log_parts.extend(
+                        [
+                            "$ " + " ".join(command_row["command"]),
+                            "",
+                            "STDOUT:",
+                            completed.stdout,
+                            "STDERR:",
+                            completed.stderr,
+                            f"EXIT_CODE: {completed.returncode}",
+                            "",
+                        ]
+                    )
+                    if completed.returncode != 0:
+                        command_row["status"] = "failed"
+                        command_row["error_message"] = completed.stderr.strip() or completed.stdout.strip()
+                        legacy_rows.append(command_row)
+                        mode_status = "failed"
+                        overall_status = "failed"
+                        break
 
-                output_metadata = output_file_metadata(output_path, min_bytes=args.min_wav_bytes)
-                command_row["output_exists"] = output_metadata["exists"]
-                command_row["output_size_bytes"] = output_metadata["size_bytes"]
-                command_row["output_sha256"] = output_metadata["sha256"]
-                if output_metadata["ok"]:
-                    command_row["status"] = "succeeded"
-                    command_rows.append(command_row)
-                else:
-                    command_row["status"] = "failed"
-                    command_row["error_message"] = output_metadata["error_message"]
-                    command_rows.append(command_row)
-                    log_parts.append(output_metadata["error_message"])
-                    mode_status = "failed"
-                    overall_status = "failed"
-                    break
+                    output_metadata = output_file_metadata(output_path, min_bytes=args.min_wav_bytes)
+                    command_row["output_exists"] = output_metadata["exists"]
+                    command_row["output_size_bytes"] = output_metadata["size_bytes"]
+                    command_row["output_sha256"] = output_metadata["sha256"]
+                    if output_metadata["ok"]:
+                        command_row["status"] = "succeeded"
+                        legacy_rows.append(command_row)
+                    else:
+                        command_row["status"] = "failed"
+                        command_row["error_message"] = output_metadata["error_message"]
+                        legacy_rows.append(command_row)
+                        log_parts.append(output_metadata["error_message"])
+                        mode_status = "failed"
+                        overall_status = "failed"
+                        break
+                command_rows = legacy_rows
         except Exception as exc:
             mode_status = "failed"
             overall_status = "failed"
