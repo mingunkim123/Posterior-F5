@@ -491,6 +491,55 @@ def test_run_scaffold_can_plan_audio_metrics_stage(tmp_path):
     assert "utmos_mean" in summary["modes"][0]
 
 
+def test_run_scaffold_marks_audio_metrics_preflight_failure(tmp_path):
+    ref_audio = tmp_path / "ref.wav"
+    ref_audio.write_bytes(b"not-used-in-dry-run")
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "utterance_id": "utt-001",
+                "ref_audio": str(ref_audio),
+                "ref_text": "Reference transcript.",
+                "gen_text": "Target text.",
+                "text": "Target text.",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--run_id",
+            "run_audio_metrics_missing_checkpoint",
+            "--artifact_root",
+            str(tmp_path / "runs"),
+            "--manifest",
+            str(manifest),
+            "--run_inference",
+            "--inference_dry_run",
+            "--run_audio_metrics",
+            "--run_speaker_similarity",
+        ],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 1
+    run_root = tmp_path / "runs" / "run_audio_metrics_missing_checkpoint"
+    payload = json.loads((run_root / "run.json").read_text(encoding="utf-8"))
+
+    assert payload["status"] == "failed"
+    assert payload["stages"][2]["name"] == "audio_metrics"
+    assert payload["stages"][2]["status"] == "failed"
+    assert "Speaker similarity requires --speaker_checkpoint" in payload["error_message"]
+
+
 def test_run_scaffold_can_apply_yaml_config(tmp_path):
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text(

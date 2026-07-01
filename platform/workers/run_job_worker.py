@@ -75,6 +75,28 @@ def normalize_worker_command(command: list[str]) -> list[str]:
     return command
 
 
+def wait_for_process_or_cancel(process: subprocess.Popen[str], job_file: Path) -> tuple[int, bool]:
+    while True:
+        exit_code = process.poll()
+        if exit_code is not None:
+            return exit_code, False
+
+        try:
+            latest_job = read_json(job_file)
+        except (OSError, ValueError):
+            latest_job = {}
+
+        if latest_job.get("status") == "cancelling":
+            process.terminate()
+            try:
+                return process.wait(timeout=10), True
+            except subprocess.TimeoutExpired:
+                process.kill()
+                return process.wait(), True
+
+        time.sleep(0.5)
+
+
 def run_job(run_id: str, *, artifact_root: Path) -> dict[str, Any]:
     run_root = run_path(run_id, artifact_root=artifact_root)
     job_file = job_path(run_id, artifact_root=artifact_root)
@@ -111,23 +133,34 @@ def run_job(run_id: str, *, artifact_root: Path) -> dict[str, Any]:
 
         job["pid"] = process.pid
         write_json(job_file, job)
-        exit_code = process.wait()
+        exit_code, was_cancelled = wait_for_process_or_cancel(process, job_file)
 
     job = read_json(job_file) if job_file.exists() else job
     job["exit_code"] = exit_code
     job["finished_at"] = timestamp()
-    job["status"] = "succeeded" if exit_code == 0 else "failed"
-    if exit_code != 0:
+    if was_cancelled:
+        job["status"] = "cancelled"
+        append_event(run_id, level="warning", stage="job", message="cancelled", artifact_root=artifact_root)
+    else:
+        job["status"] = "succeeded" if exit_code == 0 else "failed"
+    if exit_code != 0 and not was_cancelled:
         job["error_message"] = failure_message(stderr_path, exit_code)
         append_event(run_id, level="error", stage="job", message=job["error_message"], artifact_root=artifact_root)
-    else:
+    elif exit_code == 0:
         append_event(run_id, level="info", stage="job", message="completed", artifact_root=artifact_root)
 
     run_json = run_root / "run.json"
     if run_json.exists():
         try:
             run = read_json(run_json)
-            if exit_code != 0:
+            if was_cancelled:
+                if run.get("status") in {"queued", "submitted", "running"}:
+                    run["status"] = "cancelled"
+                    run["updated_at"] = timestamp()
+                    write_json(run_json, run)
+                job["run"] = run
+                job["status"] = "cancelled"
+            elif exit_code != 0:
                 if run.get("status") in {"queued", "submitted", "running"}:
                     run["status"] = "failed"
                     run["updated_at"] = timestamp()

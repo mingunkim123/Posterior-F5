@@ -107,6 +107,8 @@ class SpeakerSimilarityScorer:
         self.model.load_state_dict(state, strict=False)
         self.model.to(self.device)
         self.model.eval()
+        self._resamplers: dict[int, Any] = {}
+        self._reference_embedding_cache: dict[tuple[str, int, int], Any] = {}
 
     def _load_audio(self, path: Path):
         wav, sr = self.torchaudio.load(str(path))
@@ -114,15 +116,35 @@ class SpeakerSimilarityScorer:
             wav = wav.mean(dim=0, keepdim=True)
         wav = wav.to(self.device)
         if sr != 16000:
-            wav = self.torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000).to(self.device)(wav)
+            resampler = self._resamplers.get(sr)
+            if resampler is None:
+                resampler = self.torchaudio.transforms.Resample(orig_freq=sr, new_freq=16000).to(self.device)
+                self._resamplers[sr] = resampler
+            wav = resampler(wav)
         return wav
 
+    def _cache_key(self, path: Path) -> tuple[str, int, int]:
+        resolved = path.expanduser().resolve()
+        stat = resolved.stat()
+        return str(resolved), stat.st_size, stat.st_mtime_ns
+
+    def _embedding(self, path: Path):
+        wav = self._load_audio(path)
+        with self.torch.inference_mode():
+            return self.model(wav)
+
+    def _reference_embedding(self, path: Path):
+        key = self._cache_key(path)
+        cached = self._reference_embedding_cache.get(key)
+        if cached is not None:
+            return cached
+        embedding = self._embedding(path).detach()
+        self._reference_embedding_cache[key] = embedding
+        return embedding
+
     def score(self, generated_audio: Path, ref_audio: Path) -> float:
-        wav_generated = self._load_audio(generated_audio)
-        wav_ref = self._load_audio(ref_audio)
-        with self.torch.no_grad():
-            generated_embedding = self.model(wav_generated)
-            ref_embedding = self.model(wav_ref)
+        generated_embedding = self._embedding(generated_audio)
+        ref_embedding = self._reference_embedding(ref_audio)
         return float(self.F.cosine_similarity(generated_embedding, ref_embedding)[0].item())
 
 
@@ -141,7 +163,7 @@ class UtmosScorer:
     def score(self, generated_audio: Path) -> float:
         wav, sr = self.librosa.load(generated_audio, sr=None, mono=True)
         wav_tensor = self.torch.from_numpy(wav).to(self.device).unsqueeze(0)
-        with self.torch.no_grad():
+        with self.torch.inference_mode():
             score = self.predictor(wav_tensor, sr)
         return float(score.item())
 

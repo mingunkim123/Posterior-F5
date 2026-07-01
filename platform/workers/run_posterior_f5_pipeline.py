@@ -1197,9 +1197,31 @@ def run_audio_metrics_stage(
     modes = args.modes or DEFAULT_MODES
     manifest_path = run_root / manifest_name
     manifest_base_dir = source_manifest.expanduser().resolve().parent if source_manifest is not None else None
-    env = _subprocess_env(repo_root)
     mode_summaries: list[dict[str, Any]] = []
     overall_status = "succeeded"
+    speaker_scorer = None
+    utmos_scorer = None
+    evaluate_audio_metrics = None
+    manifest_rows: list[dict[str, Any]] | None = None
+
+    if not args.audio_metrics_dry_run:
+        from f5_tts.eval.eval_audio_metrics import (
+            SpeakerSimilarityScorer,
+            UtmosScorer,
+            evaluate_audio_metrics as evaluate_audio_metrics_fn,
+        )
+
+        evaluate_audio_metrics = evaluate_audio_metrics_fn
+        manifest_rows = iter_jsonl(manifest_path)
+
+        if args.run_speaker_similarity:
+            speaker_scorer = SpeakerSimilarityScorer(
+                checkpoint=args.speaker_checkpoint,
+                device=args.speaker_device,
+                feat_type=args.speaker_feat_type,
+            )
+        if args.run_utmos:
+            utmos_scorer = UtmosScorer(device=args.utmos_device)
 
     for mode in modes:
         generation_metadata_path = run_root / "generated" / mode / "commands.jsonl"
@@ -1274,31 +1296,42 @@ def run_audio_metrics_stage(
             mode_status = "failed"
             overall_status = "failed"
         else:
-            completed = subprocess.run(command, cwd=repo_root, check=False, capture_output=True, text=True, env=env)
-            log_path.write_text(
-                "\n".join(
-                    [
-                        "$ " + " ".join(command),
-                        "",
-                        "STDOUT:",
-                        completed.stdout,
-                        "STDERR:",
-                        completed.stderr,
-                        f"EXIT_CODE: {completed.returncode}",
-                    ]
-                ),
-                encoding="utf-8",
-            )
-            if completed.returncode == 0:
-                metrics = json.loads(output_path.read_text(encoding="utf-8"))
+            try:
+                if evaluate_audio_metrics is None or manifest_rows is None:
+                    raise RuntimeError("Audio metric evaluator was not initialized")
+                metrics, rows = evaluate_audio_metrics(
+                    manifest_rows=manifest_rows,
+                    generation_rows=iter_jsonl(generation_metadata_path),
+                    run_root=run_root,
+                    mode=mode,
+                    repo_root=repo_root,
+                    manifest_base_dir=manifest_base_dir,
+                    speaker_scorer=speaker_scorer,
+                    utmos_scorer=utmos_scorer,
+                )
                 metrics["status"] = "succeeded"
                 write_json(output_path, metrics)
+                write_jsonl(per_utterance_path, rows)
+                log_path.write_text(
+                    "\n".join(
+                        [
+                            "$ " + " ".join(command),
+                            "DIRECT_CALL: true",
+                            "MODEL_REUSE: one scorer instance is reused across all modes in this stage",
+                            "",
+                            "SUMMARY:",
+                            json.dumps(metrics, indent=2, ensure_ascii=False),
+                            "EXIT_CODE: 0",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
                 mode_status = "succeeded"
-            else:
+            except Exception as exc:
                 metrics = {
                     "mode": mode,
                     "status": "failed",
-                    "error_message": completed.stderr.strip() or completed.stdout.strip(),
+                    "error_message": str(exc),
                     "num_utterances": 0,
                     "num_audio": 0,
                     "audio_metric_coverage": None,
@@ -1309,6 +1342,20 @@ def run_audio_metrics_stage(
                     "utmos_mean": None,
                 }
                 write_json(output_path, metrics)
+                per_utterance_path.write_text("", encoding="utf-8")
+                log_path.write_text(
+                    "\n".join(
+                        [
+                            "$ " + " ".join(command),
+                            "DIRECT_CALL: true",
+                            "",
+                            "ERROR:",
+                            str(exc),
+                            "EXIT_CODE: 1",
+                        ]
+                    ),
+                    encoding="utf-8",
+                )
                 mode_status = "failed"
                 overall_status = "failed"
 
@@ -1669,7 +1716,16 @@ def _execute_stage(
 
     append_event(run_root, level="info", stage=name, message="started")
     write_payload(status="running", stages=[*stages, running_payload])
-    stage_payload = runner(**runner_kwargs)
+    try:
+        stage_payload = runner(**runner_kwargs)
+    except Exception as exc:
+        message = str(exc) or failure_message
+        stage_payload = {**running_payload, "status": "failed", "error_message": message}
+        stages = [*stages, stage_payload]
+        append_event(run_root, level="error", stage=name, message=message)
+        write_payload(status="failed", stages=stages, error_message=message)
+        raise RuntimeError(message) from exc
+
     stages = [*stages, stage_payload]
 
     if stage_payload["status"] == fail_status or (name == "posterior_extraction" and stage_payload["status"] != "succeeded"):

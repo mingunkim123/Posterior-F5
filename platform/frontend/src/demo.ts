@@ -22,6 +22,19 @@ export const fallbackCheckpoints: Checkpoint[] = [
   },
 ];
 
+export const fallbackSpeakerCheckpoints: Checkpoint[] = [
+  {
+    id: "wavlm_large_finetune",
+    model: "ECAPA_TDNN_SMALL",
+    path: "ckpts/speaker/wavlm_large_finetune.pth",
+    vocoder: "none",
+    checkpoint_hash: "",
+    exists: false,
+    feat_type: "wavlm_large",
+    notes: "Speaker similarity checkpoint slot",
+  },
+];
+
 export const fallbackDatasets: Dataset[] = [
   {
     id: "dev_smoke",

@@ -183,13 +183,16 @@ export type Checkpoint = {
   path: string;
   vocoder: string;
   checkpoint_hash?: string;
+  exists?: boolean;
   notes?: string;
   dataset?: string | null;
   git_commit?: string | null;
+  feat_type?: string | null;
 };
 
 export type CheckpointRegistry = {
   checkpoints: Checkpoint[];
+  speaker_checkpoints?: Checkpoint[];
 };
 
 export type Dataset = {
@@ -360,9 +363,26 @@ async function postJson<T>(path: string, payload: unknown): Promise<T> {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `${response.status} ${response.statusText}`);
+    throw new Error(readApiError(text) || `${response.status} ${response.statusText}`);
   }
   return response.json() as Promise<T>;
+}
+
+function readApiError(text: string): string {
+  if (!text) return "";
+  try {
+    const payload = JSON.parse(text) as { detail?: unknown };
+    if (typeof payload.detail === "string") return payload.detail;
+    if (payload.detail && typeof payload.detail === "object") {
+      const detail = payload.detail as Record<string, unknown>;
+      for (const key of ["stderr", "error_message", "message", "status"]) {
+        if (typeof detail[key] === "string" && detail[key]) return detail[key];
+      }
+    }
+  } catch {
+    // Keep the original response body when it is not JSON.
+  }
+  return text;
 }
 
 export async function fetchRuns(): Promise<Run[]> {

@@ -80,6 +80,10 @@ language
 | paper table CSV |  |
 | paper table Markdown |  |
 | qualitative examples |  |
+| audio metric mode | RTF-only / speaker similarity / UTMOS |
+| speaker checkpoint |  |
+| eval device |  |
+| performance notes reviewed | `docs/md/performance_optimization_notes.md` |
 
 ## Freeze Criteria
 

@@ -30,3 +30,12 @@ checkpoints:
     dataset: dev_small
     git_commit: ""
     notes: Stage 2 posterior encoder checkpoint slot; fill hash and commit after Step 101-106 training smoke.
+
+speaker_checkpoints:
+  wavlm_large_finetune:
+    model: ECAPA_TDNN_SMALL
+    path: ckpts/speaker/wavlm_large_finetune.pth
+    vocoder: none
+    checkpoint_hash: ""
+    feat_type: wavlm_large
+    notes: Speaker similarity checkpoint slot. Download the UniSpeech/WavLM speaker model here before enabling Speaker SIM.

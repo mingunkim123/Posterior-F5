@@ -7,7 +7,6 @@ import csv
 import hashlib
 import re
 import os
-import signal
 from difflib import SequenceMatcher
 from datetime import datetime
 from pathlib import Path
@@ -67,19 +66,34 @@ def checkpoint_file_hash(path: str, *, repo_root: Path | None = None) -> str:
 def load_checkpoint_registry(*, repo_root: Path | None = None) -> dict[str, Any]:
     path = checkpoint_registry_path(repo_root)
     if not path.exists():
-        return {"checkpoints": []}
+        return {"checkpoints": [], "speaker_checkpoints": []}
 
     import yaml
 
     payload = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    checkpoints = _checkpoint_rows(payload.get("checkpoints") or {}, repo_root=repo_root)
+    speaker_checkpoints = _checkpoint_rows(payload.get("speaker_checkpoints") or {}, repo_root=repo_root)
+    return {"checkpoints": checkpoints, "speaker_checkpoints": speaker_checkpoints}
+
+
+def _checkpoint_rows(entries: dict[str, Any], *, repo_root: Path | None = None) -> list[dict[str, Any]]:
     checkpoints = []
-    for checkpoint_id, entry in (payload.get("checkpoints") or {}).items():
+    for checkpoint_id, entry in entries.items():
         if not isinstance(entry, dict):
             continue
         checkpoint_path = str(entry.get("path") or "")
         checkpoint_hash = str(entry.get("checkpoint_hash") or entry.get("sha256") or "")
         if not checkpoint_hash:
             checkpoint_hash = checkpoint_file_hash(checkpoint_path, repo_root=repo_root)
+        checkpoint_exists = False
+        if checkpoint_path:
+            if checkpoint_path.startswith(("hf://", "http://", "https://", "s3://")):
+                checkpoint_exists = True
+            else:
+                candidate = Path(checkpoint_path).expanduser()
+                if not candidate.is_absolute():
+                    candidate = (repo_root or repository_root()) / candidate
+                checkpoint_exists = candidate.exists()
         checkpoints.append(
             {
                 "id": str(checkpoint_id),
@@ -87,12 +101,14 @@ def load_checkpoint_registry(*, repo_root: Path | None = None) -> dict[str, Any]
                 "path": checkpoint_path,
                 "vocoder": str(entry.get("vocoder") or "vocos"),
                 "checkpoint_hash": checkpoint_hash,
+                "exists": checkpoint_exists,
                 "notes": str(entry.get("notes") or ""),
                 "dataset": entry.get("dataset"),
                 "git_commit": entry.get("git_commit"),
+                "feat_type": entry.get("feat_type"),
             }
         )
-    return {"checkpoints": checkpoints}
+    return checkpoints
 
 
 def checkpoint_by_id(checkpoint_id: str, *, repo_root: Path | None = None) -> dict[str, Any] | None:
@@ -1081,12 +1097,6 @@ def cancel_run(run_id: str, *, artifact_root: Path | None = None) -> dict[str, A
     if job.get("status") == "running":
         job["status"] = "cancelling"
         job["cancel_requested_at"] = timestamp()
-        pid = job.get("pid")
-        if isinstance(pid, int) and pid > 0:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError as exc:
-                job["cancel_error"] = str(exc)
         write_json(job_file, job)
         append_event(run_id, level="warning", stage="job", message="cancel requested", artifact_root=artifact_root)
         return job
@@ -1198,6 +1208,28 @@ def build_pipeline_command(payload: dict[str, Any], *, artifact_root: Path | Non
     return command
 
 
+def validate_run_payload(payload: dict[str, Any]) -> str | None:
+    if payload.get("run_speaker_similarity") and not payload.get("run_audio_metrics"):
+        return "Speaker similarity requires audio metrics"
+    if payload.get("run_utmos") and not payload.get("run_audio_metrics"):
+        return "UTMOS requires audio metrics"
+    if (
+        payload.get("run_speaker_similarity")
+        and not payload.get("audio_metrics_dry_run")
+        and not str(payload.get("speaker_checkpoint") or "").strip()
+    ):
+        return "Speaker similarity requires --speaker_checkpoint"
+    speaker_checkpoint = str(payload.get("speaker_checkpoint") or "").strip()
+    if payload.get("run_speaker_similarity") and not payload.get("audio_metrics_dry_run") and speaker_checkpoint:
+        if not speaker_checkpoint.startswith(("hf://", "http://", "https://", "s3://")):
+            candidate = Path(speaker_checkpoint).expanduser()
+            if not candidate.is_absolute():
+                candidate = repository_root() / candidate
+            if not candidate.exists():
+                return f"Speaker checkpoint does not exist: {speaker_checkpoint}"
+    return None
+
+
 def start_run(payload: dict[str, Any], *, artifact_root: Path | None = None) -> dict[str, Any]:
     try:
         payload = resolve_dataset_payload(payload)
@@ -1211,6 +1243,18 @@ def start_run(payload: dict[str, Any], *, artifact_root: Path | None = None) -> 
             "stdout": "",
             "stderr": str(exc),
         }
+
+    validation_error = validate_run_payload(payload)
+    if validation_error:
+        return {
+            "status": "failed",
+            "run_id": str(payload.get("run_id") or ""),
+            "exit_code": 1,
+            "command": [],
+            "stdout": "",
+            "stderr": validation_error,
+        }
+
     run_id = payload.get("run_id") or generate_run_id()
     payload["run_id"] = run_id
     root = artifact_root or default_artifact_root()

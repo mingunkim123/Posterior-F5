@@ -73,6 +73,7 @@ import {
   fallbackDatasets,
   fallbackEvaluationReport,
   fallbackModelRegistry,
+  fallbackSpeakerCheckpoints,
 } from "./demo";
 
 const modeColors: Record<string, string> = {
@@ -86,6 +87,7 @@ const modeColors: Record<string, string> = {
 
 const availableModes = ["hard", "oracle", "length_only", "soft_ctc", "posterior_encoder", "hybrid"];
 const sampleManifest = "platform/samples/manifests/dev_smoke.jsonl";
+const posteriorRequiredModes = new Set(["length_only", "soft_ctc", "posterior_encoder", "hybrid"]);
 
 const defaultRunPayload: RunCreatePayload = {
   project: "Posterior-F5",
@@ -142,6 +144,90 @@ type RunPreset = {
   payload: Partial<RunCreatePayload>;
 };
 
+function needsPosterior(modes: string[]): boolean {
+  return modes.some((mode) => posteriorRequiredModes.has(mode));
+}
+
+function normalizeRunPayload(payload: RunCreatePayload): RunCreatePayload {
+  const next = { ...payload };
+  const speakerCheckpoint = next.speaker_checkpoint?.trim() ?? "";
+
+  if (needsPosterior(next.modes) && (next.run_inference || next.run_prediction || next.run_metrics)) {
+    next.run_posterior_extraction = true;
+  }
+
+  if (next.run_metrics) {
+    next.run_prediction = true;
+  }
+  if (next.run_prediction || next.run_audio_metrics) {
+    next.run_inference = true;
+  }
+
+  if (!next.run_inference) {
+    next.inference_dry_run = true;
+    next.run_prediction = false;
+    next.prediction_dry_run = true;
+    next.run_audio_metrics = false;
+    next.audio_metrics_dry_run = true;
+    next.run_metrics = false;
+    next.metrics_dry_run = false;
+  }
+
+  if (next.inference_dry_run) {
+    next.prediction_dry_run = true;
+    next.audio_metrics_dry_run = true;
+    next.metrics_dry_run = next.run_metrics;
+  }
+
+  if (!next.run_prediction) {
+    next.prediction_dry_run = true;
+    next.run_metrics = false;
+    next.metrics_dry_run = false;
+  }
+
+  if (next.run_metrics && next.prediction_dry_run) {
+    next.metrics_dry_run = true;
+  }
+
+  if (!next.run_audio_metrics) {
+    next.audio_metrics_dry_run = true;
+    next.run_speaker_similarity = false;
+    next.run_utmos = false;
+  }
+
+  if (next.audio_metrics_dry_run) {
+    next.run_speaker_similarity = false;
+    next.run_utmos = false;
+  }
+
+  if (next.run_speaker_similarity && !speakerCheckpoint) {
+    next.run_speaker_similarity = false;
+  }
+
+  return next;
+}
+
+function presetPayload(current: RunCreatePayload, preset: RunPreset): RunCreatePayload {
+  return normalizeRunPayload({
+    ...defaultRunPayload,
+    dataset_id: current.dataset_id,
+    manifest: current.manifest,
+    language: current.language,
+    model: current.model,
+    checkpoint_id: current.checkpoint_id,
+    checkpoint: current.checkpoint,
+    checkpoint_hash: current.checkpoint_hash,
+    vocoder: current.vocoder,
+    seed: current.seed,
+    bootstrap_samples: current.bootstrap_samples,
+    bootstrap_seed: current.bootstrap_seed,
+    significance_baseline: current.significance_baseline,
+    ...preset.payload,
+    run_id: undefined,
+    fail_if_exists: false,
+  });
+}
+
 const runPresets: RunPreset[] = [
   {
     key: "scaffold_only",
@@ -149,6 +235,7 @@ const runPresets: RunPreset[] = [
     summary: "데이터 로드만 — 실행 디렉터리와 설정을 만듭니다.",
     payload: {
       experiment: "scaffold_only_smoke",
+      dataset_id: "dev_smoke",
       manifest: sampleManifest,
       modes: ["hard"],
       run_posterior_extraction: false,
@@ -157,6 +244,11 @@ const runPresets: RunPreset[] = [
       inference_dry_run: true,
       run_prediction: false,
       prediction_dry_run: true,
+      run_audio_metrics: false,
+      audio_metrics_dry_run: true,
+      run_speaker_similarity: false,
+      speaker_checkpoint: "",
+      run_utmos: false,
       run_metrics: false,
       metrics_dry_run: false,
     },
@@ -167,6 +259,7 @@ const runPresets: RunPreset[] = [
     summary: "데이터 로드 + posterior 신호 추출까지 진행합니다.",
     payload: {
       experiment: "posterior_text_smoke",
+      dataset_id: "dev_smoke",
       manifest: sampleManifest,
       modes: ["hard"],
       run_posterior_extraction: true,
@@ -175,6 +268,11 @@ const runPresets: RunPreset[] = [
       inference_dry_run: true,
       run_prediction: false,
       prediction_dry_run: true,
+      run_audio_metrics: false,
+      audio_metrics_dry_run: true,
+      run_speaker_similarity: false,
+      speaker_checkpoint: "",
+      run_utmos: false,
       run_metrics: false,
       metrics_dry_run: false,
     },
@@ -185,6 +283,7 @@ const runPresets: RunPreset[] = [
     summary: "모드별 음성 생성 명령을 계획(dry-run)으로 준비합니다.",
     payload: {
       experiment: "dry_inference_plan",
+      dataset_id: "dev_smoke",
       manifest: sampleManifest,
       modes: ["hard", "oracle", "length_only", "soft_ctc"],
       run_posterior_extraction: true,
@@ -193,6 +292,11 @@ const runPresets: RunPreset[] = [
       inference_dry_run: true,
       run_prediction: false,
       prediction_dry_run: true,
+      run_audio_metrics: false,
+      audio_metrics_dry_run: true,
+      run_speaker_similarity: false,
+      speaker_checkpoint: "",
+      run_utmos: false,
       run_metrics: false,
       metrics_dry_run: false,
     },
@@ -200,17 +304,23 @@ const runPresets: RunPreset[] = [
   {
     key: "metrics_dry_run",
     label: "평가까지 한 번에",
-    summary: "데이터 → 생성(계획) → 평가까지 전체 흐름을 실행합니다.",
+    summary: "실제 음성 생성 후 RTF, ASR, WER/CER까지 계산합니다.",
     payload: {
-      experiment: "metrics_dry_run",
+      experiment: "rtf_asr_eval_smoke",
+      dataset_id: "dev_smoke",
       manifest: sampleManifest,
       modes: ["hard", "oracle", "length_only", "soft_ctc"],
       run_posterior_extraction: true,
       skip_whisper: true,
       run_inference: true,
-      inference_dry_run: true,
+      inference_dry_run: false,
+      run_audio_metrics: true,
+      audio_metrics_dry_run: false,
+      run_speaker_similarity: false,
+      speaker_checkpoint: "",
+      run_utmos: false,
       run_prediction: true,
-      prediction_dry_run: true,
+      prediction_dry_run: false,
       run_metrics: true,
       metrics_dry_run: false,
     },
@@ -1061,11 +1171,13 @@ function RunLauncher({
   checkpoints,
   datasets,
   onCreate,
+  speakerCheckpoints,
 }: {
   apiState: "api" | "demo" | "loading";
   checkpoints: Checkpoint[];
   datasets: Dataset[];
   onCreate: (payload: RunCreatePayload) => Promise<void>;
+  speakerCheckpoints: Checkpoint[];
 }) {
   const [payload, setPayload] = useState<RunCreatePayload>(defaultRunPayload);
   const [activePreset, setActivePreset] = useState(runPresets[0].key);
@@ -1073,17 +1185,12 @@ function RunLauncher({
 
   function setValue<K extends keyof RunCreatePayload>(key: K, value: RunCreatePayload[K]) {
     setActivePreset("");
-    setPayload((current) => ({ ...current, [key]: value }));
+    setPayload((current) => normalizeRunPayload({ ...current, [key]: value }));
   }
 
   function applyPreset(preset: RunPreset) {
     setActivePreset(preset.key);
-    setPayload((current) => ({
-      ...current,
-      ...preset.payload,
-      run_id: undefined,
-      fail_if_exists: false,
-    }));
+    setPayload((current) => presetPayload(current, preset));
   }
 
   function selectCheckpoint(checkpointId: string) {
@@ -1099,10 +1206,20 @@ function RunLauncher({
     }));
   }
 
+  function selectSpeakerCheckpoint(checkpointId: string) {
+    setActivePreset("");
+    const checkpoint = speakerCheckpoints.find((item) => item.id === checkpointId);
+    setPayload((current) => normalizeRunPayload({
+      ...current,
+      speaker_checkpoint: checkpoint?.path ?? "",
+      speaker_feat_type: checkpoint?.feat_type ?? current.speaker_feat_type,
+    }));
+  }
+
   function selectDataset(datasetId: string) {
     setActivePreset("");
     const dataset = datasets.find((item) => item.id === datasetId);
-    setPayload((current) => ({
+    setPayload((current) => normalizeRunPayload({
       ...current,
       dataset_id: datasetId,
       manifest: dataset?.manifest ?? current.manifest,
@@ -1115,7 +1232,7 @@ function RunLauncher({
       return;
     }
     const dataset = datasets.find((item) => item.id === "dev_small_20") ?? datasets[0];
-    setPayload((current) => ({
+    setPayload((current) => normalizeRunPayload({
       ...current,
       dataset_id: dataset.id,
       manifest: dataset.manifest,
@@ -1127,20 +1244,24 @@ function RunLauncher({
     setActivePreset("");
     setPayload((current) => {
       const modes = current.modes.includes(mode) ? current.modes.filter((item) => item !== mode) : [...current.modes, mode];
-      return { ...current, modes };
+      return normalizeRunPayload({ ...current, modes });
     });
   }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setIsSubmitting(true);
+    const normalizedPayload = normalizeRunPayload({
+      ...payload,
+      run_speaker_similarity: selectedSpeakerMissing ? false : payload.run_speaker_similarity,
+      run_id: payload.run_id?.trim() || undefined,
+      manifest: payload.manifest.trim(),
+      experiment: payload.experiment.trim(),
+      speaker_checkpoint: payload.speaker_checkpoint?.trim() ?? "",
+    });
+    setPayload(normalizedPayload);
     try {
-      await onCreate({
-        ...payload,
-        run_id: payload.run_id?.trim() || undefined,
-        manifest: payload.manifest.trim(),
-        experiment: payload.experiment.trim(),
-      });
+      await onCreate(normalizedPayload);
     } finally {
       setIsSubmitting(false);
     }
@@ -1149,6 +1270,16 @@ function RunLauncher({
   const disabled = isSubmitting || apiState !== "api";
   const activePresetSummary = runPresets.find((preset) => preset.key === activePreset)?.summary;
   const selectedDataset = datasets.find((item) => item.id === payload.dataset_id);
+  const audioMetricsReady = payload.run_audio_metrics && !payload.audio_metrics_dry_run;
+  const selectedSpeakerCheckpoint = speakerCheckpoints.find((item) => item.path === payload.speaker_checkpoint);
+  const selectedSpeakerMissing = selectedSpeakerCheckpoint?.exists === false;
+  const speakerSimDisabled = !audioMetricsReady || !(payload.speaker_checkpoint?.trim() ?? "") || selectedSpeakerMissing;
+  const utmosDisabled = !audioMetricsReady;
+  useEffect(() => {
+    if (selectedSpeakerMissing && payload.run_speaker_similarity) {
+      setPayload((current) => ({ ...current, run_speaker_similarity: false }));
+    }
+  }, [payload.run_speaker_similarity, selectedSpeakerMissing]);
   return (
     <section className="panel launcher">
       <div className="panelHeader">
@@ -1294,11 +1425,16 @@ function RunLauncher({
             <span>음향 계획만</span>
           </label>
           <label className="checkRow">
-            <input checked={payload.run_speaker_similarity} type="checkbox" onChange={(event) => setValue("run_speaker_similarity", event.target.checked)} />
+            <input
+              checked={payload.run_speaker_similarity && !speakerSimDisabled}
+              disabled={speakerSimDisabled}
+              type="checkbox"
+              onChange={(event) => setValue("run_speaker_similarity", event.target.checked)}
+            />
             <span>Speaker SIM</span>
           </label>
           <label className="checkRow">
-            <input checked={payload.run_utmos} type="checkbox" onChange={(event) => setValue("run_utmos", event.target.checked)} />
+            <input checked={payload.run_utmos} disabled={utmosDisabled} type="checkbox" onChange={(event) => setValue("run_utmos", event.target.checked)} />
             <span>UTMOS</span>
           </label>
           <label className="checkRow">
@@ -1308,6 +1444,14 @@ function RunLauncher({
         </div>
         <label>
           <span>Speaker checkpoint</span>
+          <select value={selectedSpeakerCheckpoint?.id ?? ""} onChange={(event) => selectSpeakerCheckpoint(event.target.value)}>
+            <option value="">직접 입력 또는 선택 안 함</option>
+            {speakerCheckpoints.map((checkpoint) => (
+              <option disabled={checkpoint.exists === false} key={checkpoint.id} value={checkpoint.id}>
+                {checkpoint.id} · {checkpoint.feat_type ?? checkpoint.model}{checkpoint.exists === false ? " · 파일 없음" : ""}
+              </option>
+            ))}
+          </select>
           <input placeholder="optional ECAPA checkpoint" value={payload.speaker_checkpoint ?? ""} onChange={(event) => setValue("speaker_checkpoint", event.target.value)} />
         </label>
         <div className="formFooter">
@@ -2044,6 +2188,7 @@ function App() {
   const [utterances, setUtterances] = useState<Utterance[]>(demoUtterances);
   const [compareRows, setCompareRows] = useState<CompareRow[]>(demoCompareRows);
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>(fallbackCheckpoints);
+  const [speakerCheckpoints, setSpeakerCheckpoints] = useState<Checkpoint[]>(fallbackSpeakerCheckpoints);
   const [datasets, setDatasets] = useState<Dataset[]>(fallbackDatasets);
   const [models, setModels] = useState<ModelCard[]>(fallbackModelRegistry.models);
   const [evaluationReport, setEvaluationReport] = useState<EvaluationReport>(fallbackEvaluationReport);
@@ -2091,6 +2236,7 @@ function App() {
         fetchEvaluationReport(),
       ]);
       setCheckpoints(loadedCheckpoints.checkpoints.length > 0 ? loadedCheckpoints.checkpoints : fallbackCheckpoints);
+      setSpeakerCheckpoints((loadedCheckpoints.speaker_checkpoints ?? []).length > 0 ? loadedCheckpoints.speaker_checkpoints ?? [] : fallbackSpeakerCheckpoints);
       setDatasets(mergeDatasetsWithFallback(loadedDatasets.datasets ?? []));
       setCompareRows(loadedCompare.rows ?? []);
       setModels(loadedModels.models ?? []);
@@ -2122,6 +2268,7 @@ function App() {
       setUtterances(demoUtterances);
       setCompareRows(demoCompareRows);
       setCheckpoints(fallbackCheckpoints);
+      setSpeakerCheckpoints(fallbackSpeakerCheckpoints);
       setDatasets(fallbackDatasets);
       setModels(fallbackModelRegistry.models);
       setEvaluationReport(fallbackEvaluationReport);
@@ -2328,7 +2475,7 @@ function App() {
 
         {activeView === "launch" ? (
           <div className="dashboardGrid launchGrid">
-            <RunLauncher apiState={apiState} checkpoints={checkpoints} datasets={datasets} onCreate={handleCreateRun} />
+            <RunLauncher apiState={apiState} checkpoints={checkpoints} datasets={datasets} onCreate={handleCreateRun} speakerCheckpoints={speakerCheckpoints} />
             <div className="stack">
               <NextActionCard action={nextAction} />
               <RunList onSelect={(run) => void selectRun(run)} runMetrics={runMetrics} runs={runs} selectedRunId={selectedRun?.run_id} />

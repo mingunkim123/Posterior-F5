@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -254,6 +255,59 @@ def test_run_store_starts_job_and_collects_logs(tmp_path):
     assert any(event["stage"] == "job" and event["message"] == "completed" for event in events["events"])
 
 
+def test_run_store_rejects_speaker_similarity_without_checkpoint(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text('{"utterance_id":"utt-001","ref_audio":"ref.wav","text":"hello"}\n', encoding="utf-8")
+
+    run_store = _load_run_store()
+    response = run_store.start_run(
+        {
+            "run_id": "run_missing_speaker_checkpoint",
+            "project": "Posterior-F5",
+            "experiment": "invalid_audio_metrics",
+            "manifest": str(manifest),
+            "modes": ["hard"],
+            "run_inference": True,
+            "run_audio_metrics": True,
+            "audio_metrics_dry_run": False,
+            "run_speaker_similarity": True,
+            "speaker_checkpoint": "",
+        },
+        artifact_root=tmp_path / "runs",
+    )
+
+    assert response["status"] == "failed"
+    assert response["command"] == []
+    assert response["stderr"] == "Speaker similarity requires --speaker_checkpoint"
+    assert not (tmp_path / "runs" / "run_missing_speaker_checkpoint" / "job.json").exists()
+
+
+def test_run_store_rejects_missing_speaker_checkpoint_file(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text('{"utterance_id":"utt-001","ref_audio":"ref.wav","text":"hello"}\n', encoding="utf-8")
+
+    run_store = _load_run_store()
+    response = run_store.start_run(
+        {
+            "run_id": "run_missing_speaker_file",
+            "project": "Posterior-F5",
+            "experiment": "missing_speaker_file",
+            "manifest": str(manifest),
+            "modes": ["hard"],
+            "run_inference": True,
+            "run_audio_metrics": True,
+            "audio_metrics_dry_run": False,
+            "run_speaker_similarity": True,
+            "speaker_checkpoint": "ckpts/speaker/missing.pth",
+        },
+        artifact_root=tmp_path / "runs",
+    )
+
+    assert response["status"] == "failed"
+    assert response["command"] == []
+    assert response["stderr"] == "Speaker checkpoint does not exist: ckpts/speaker/missing.pth"
+
+
 def test_run_store_cancel_retry_resume_and_dataset_registry(tmp_path):
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text('{"utterance_id":"utt-001","ref_audio":"ref.wav","text":"hello"}\n', encoding="utf-8")
@@ -285,6 +339,70 @@ def test_run_store_cancel_retry_resume_and_dataset_registry(tmp_path):
 
     datasets = run_store.load_dataset_registry()
     assert any(dataset["id"] == "dev_smoke" for dataset in datasets["datasets"])
+
+
+def test_worker_cancels_running_child_process(tmp_path):
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text('{"utterance_id":"utt-001","ref_audio":"ref.wav","text":"hello"}\n', encoding="utf-8")
+
+    run_store = _load_run_store()
+    run_store.start_run(
+        {
+            "run_id": "run_cancel_running",
+            "project": "Posterior-F5",
+            "experiment": "cancel_running",
+            "manifest": str(manifest),
+            "modes": ["hard"],
+        },
+        artifact_root=tmp_path / "runs",
+    )
+    job_file = tmp_path / "runs" / "run_cancel_running" / "job.json"
+    job = json.loads(job_file.read_text(encoding="utf-8"))
+    job["command"] = [sys.executable, "-c", "import time; time.sleep(60)"]
+    job_file.write_text(json.dumps(job), encoding="utf-8")
+    (job_file.parent / "run.json").write_text(
+        json.dumps({"run_id": "run_cancel_running", "status": "running", "stages": []}),
+        encoding="utf-8",
+    )
+
+    worker = subprocess.Popen(
+        [
+            sys.executable,
+            "platform/workers/run_job_worker.py",
+            "--artifact_root",
+            str(tmp_path / "runs"),
+            "--once",
+        ],
+        cwd=Path.cwd(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            job = run_store.load_run_job("run_cancel_running", artifact_root=tmp_path / "runs")
+            if job.get("status") == "running" and job.get("pid"):
+                break
+            time.sleep(0.1)
+        else:
+            raise AssertionError("worker did not start test job")
+
+        cancelled = run_store.cancel_run("run_cancel_running", artifact_root=tmp_path / "runs")
+        assert cancelled["status"] == "cancelling"
+
+        stdout, stderr = worker.communicate(timeout=15)
+        assert worker.returncode == 0, stderr or stdout
+    finally:
+        if worker.poll() is None:
+            worker.terminate()
+            worker.wait(timeout=5)
+
+    job = run_store.load_run_job("run_cancel_running", artifact_root=tmp_path / "runs")
+    run = run_store.load_run("run_cancel_running", artifact_root=tmp_path / "runs")
+
+    assert job["status"] == "cancelled"
+    assert run["status"] == "cancelled"
 
 
 def test_run_store_fail_if_exists_does_not_self_conflict(tmp_path):
@@ -329,6 +447,8 @@ def test_checkpoint_registry_resolves_command_options():
 
     assert registry["checkpoints"]
     assert registry["checkpoints"][0]["id"] == "f5tts_v1_base_hf"
+    assert registry["speaker_checkpoints"]
+    assert registry["speaker_checkpoints"][0]["id"] == "wavlm_large_finetune"
 
     command = run_store.build_pipeline_command(
         run_store.resolve_checkpoint_payload(

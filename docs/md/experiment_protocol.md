@@ -104,6 +104,14 @@ UTMOS or equivalent automatic quality score
 RTF / latency
 ```
 
+성능 관련 운영 메모:
+
+```text
+docs/md/performance_optimization_notes.md
+```
+
+`speaker similarity`와 `UTMOS`는 별도 딥러닝 평가 모델을 사용하므로 duration/RTF보다 훨씬 무겁다. 빠른 개발 루프에서는 RTF 중심으로 먼저 확인하고, full evaluation에서 heavy audio metrics를 켠다.
+
 주관 평가:
 
 ```text
